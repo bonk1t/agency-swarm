@@ -1,6 +1,6 @@
 from pydantic import Field
 
-from .SendMessageBase import SendMessageBase
+from .send_message_base import SendMessageBase
 
 
 class SendMessageQuick(SendMessageBase):

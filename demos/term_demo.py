@@ -3,7 +3,7 @@ import sys
 
 from agency_swarm.agency.agency import Agency
 from agency_swarm.threads import Thread
-from tests.ceo.ceo import Ceo
+from tests_old.ceo.ceo import Ceo
 
 from .test_agent.test_agent import TestAgent
 from .test_agent2.test_agent2 import TestAgent2

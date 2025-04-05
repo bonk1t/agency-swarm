@@ -15,7 +15,7 @@ class Validator(BaseModel):
 
     reason: str = Field(
         ...,
-        description="Step-by-step reasoning why the attribute could be valid or not with a conclussion at the end.",
+        description="Step-by-step reasoning why the attribute could be valid or not with a conclusion at the end.",
     )
     is_valid: bool = Field(
         ..., description="Whether the attribute is valid based on the requirements."
@@ -28,7 +28,7 @@ class Validator(BaseModel):
 
 def llm_validator(
     statement: str,
-    client: OpenAI = None,
+    client: OpenAI | None = None,
     allow_override: bool = False,
     model: str = DEFAULT_MODEL_MINI,
     temperature: float = 0,
@@ -62,12 +62,13 @@ def llm_validator(
 
     Parameters:
         statement (str): The statement to validate
+        client (OpenAI): The OpenAI client to use (default: None). Must be a sync client.
+        allow_override (bool): Whether to allow the LLM to override invalid values (default: False)
         model (str): The LLM to use for validation. Must be compatible with structured outputs. (default: "gpt-4o-mini")
         temperature (float): The temperature to use for the LLM (default: 0)
-        openai_client (OpenAI): The OpenAI client to use (default: None)
     """
     if client is None:
-        client = get_openai_client()
+        client = get_openai_client(is_async=False)  # Explicitly get sync client
 
     def llm(v: str) -> str:
         resp = client.beta.chat.completions.parse(
@@ -91,7 +92,7 @@ def llm_validator(
 
         resp = resp.choices[0].message.parsed
 
-        # If the response is  not valid, return the reason, this could be used in
+        # If the response is not valid, return the reason, this could be used in
         # the future to generate a better response, via reasking mechanism.
         assert resp.is_valid, resp.reason
 

@@ -51,15 +51,28 @@ dual_types = [
 ]
 
 
-def get_file_purpose(file_path):
-    mime_type, _ = mimetypes.guess_type(file_path)
-    if not mime_type:
-        raise ValueError(f"Could not determine type for file: {file_path}")
-    if mime_type in image_types:
+def get_file_purpose(file_path: str) -> str:
+    """Get the appropriate file purpose for OpenAI API based on file type.
+
+    Args:
+        file_path: Path to the file
+
+    Returns:
+        Purpose string for OpenAI API
+    """
+    # Get file extension
+    ext = file_path.lower().split(".")[-1]
+
+    # Image files for vision
+    if ext in ["jpg", "jpeg", "png", "gif", "webp"]:
         return "vision"
-    if mime_type in code_interpreter_types or mime_type in dual_types:
-        return "assistants"
-    raise ValueError(f"Unsupported file type: {mime_type}")
+
+    # Files for search
+    if ext in ["txt", "json", "csv", "md", "pdf", "py", "js", "html", "css"]:
+        return "file_search"
+
+    # Default to file_search for unknown types
+    return "file_search"
 
 
 def get_tools(file_path):
@@ -67,9 +80,7 @@ def get_tools(file_path):
     mime_type, _ = mimetypes.guess_type(file_path)
     if not mime_type:
         raise ValueError(f"Could not determine type for file: {file_path}")
-    if mime_type in code_interpreter_types:
-        return [{"type": "code_interpreter"}]
     elif mime_type in dual_types:
-        return [{"type": "code_interpreter"}, {"type": "file_search"}]
+        return [{"type": "file_search"}]
     else:
         raise ValueError(f"Unsupported file type: {mime_type}")

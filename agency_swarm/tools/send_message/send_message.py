@@ -2,7 +2,7 @@ from typing import List, Optional
 
 from pydantic import Field, model_validator
 
-from .SendMessageBase import SendMessageBase
+from .send_message_base import SendMessageBase
 
 
 class SendMessage(SendMessageBase):

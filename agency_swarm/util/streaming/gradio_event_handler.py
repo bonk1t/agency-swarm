@@ -4,7 +4,6 @@ from typing import Type
 from openai.types.beta.threads import Message
 from openai.types.beta.threads.runs.run_step import RunStep
 from openai.types.beta.threads.runs.tool_call import (
-    CodeInterpreterToolCall,
     FileSearchToolCall,
     FunctionToolCall,
     ToolCall,
@@ -79,8 +78,6 @@ def create_gradio_handler(chatbot_queue: queue.Queue) -> Type[AgencyEventHandler
 
                 if tool_call["type"] == "function":
                     tool_call = FunctionToolCall(**tool_call)
-                elif tool_call["type"] == "code_interpreter":
-                    tool_call = CodeInterpreterToolCall(**tool_call)
                 elif (
                     tool_call["type"] == "file_search"
                     or tool_call["type"] == "retrieval"
@@ -110,8 +107,6 @@ def create_gradio_handler(chatbot_queue: queue.Queue) -> Type[AgencyEventHandler
 
                 if snapshot["type"] == "function":
                     snapshot = FunctionToolCall(**snapshot)
-                elif snapshot["type"] == "code_interpreter":
-                    snapshot = CodeInterpreterToolCall(**snapshot)
                 elif snapshot["type"] == "file_search":
                     snapshot = FileSearchToolCall(**snapshot)
                 else:

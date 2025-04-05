@@ -10,7 +10,7 @@ from datamodel_code_generator import DataModelType, PythonVersion
 from datamodel_code_generator.model import get_data_model_types
 from datamodel_code_generator.parser.jsonschema import JsonSchemaParser
 
-from .BaseTool import BaseTool
+from .base_tool import BaseTool
 
 
 class ToolFactory:

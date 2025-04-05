@@ -6,10 +6,10 @@ with open("requirements.txt") as f:
 
 setup(
     name="agency-swarm",
-    version="0.4.5",
+    version="1.0.0",
     author="VRSEN",
     author_email="me@vrsen.ai",
-    description="An opensource agent orchestration framework built on top of the latest OpenAI Assistants API.",
+    description="An open source agent orchestration framework built on top of the latest OpenAI Responses API.",
     long_description=open("README.md", encoding="utf-8").read(),
     long_description_content_type="text/markdown",
     url="https://github.com/VRSEN/agency-swarm",

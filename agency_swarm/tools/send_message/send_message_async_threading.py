@@ -1,4 +1,4 @@
-from .SendMessage import SendMessage
+from .send_message import SendMessage
 
 
 class SendMessageAsyncThreading(SendMessage):

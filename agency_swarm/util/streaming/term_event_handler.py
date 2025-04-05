@@ -3,7 +3,6 @@ from typing import Type
 from openai.types.beta.threads import Message
 from openai.types.beta.threads.runs import RunStep
 from openai.types.beta.threads.runs.tool_call import (
-    CodeInterpreterToolCall,
     FileSearchToolCall,
     FunctionToolCall,
 )
@@ -57,17 +56,10 @@ def create_term_handler(agency=None) -> Type[AgencyEventHandler]:
 
                 if tool_call["type"] == "function":
                     tool_call = FunctionToolCall(**tool_call)
-                elif tool_call["type"] == "code_interpreter":
-                    tool_call = CodeInterpreterToolCall(**tool_call)
-                elif (
-                    tool_call["type"] == "file_search"
-                    or tool_call["type"] == "retrieval"
-                ):
+                elif tool_call["type"] == "file_search":
                     tool_call = FileSearchToolCall(**tool_call)
                 else:
                     raise ValueError("Invalid tool call type: " + tool_call["type"])
-
-            # TODO: add support for code interpreter and retrieval tools
 
             if tool_call.type == "function":
                 self._message_output = MessageOutputLive(
@@ -85,8 +77,6 @@ def create_term_handler(agency=None) -> Type[AgencyEventHandler]:
 
                 if snapshot["type"] == "function":
                     snapshot = FunctionToolCall(**snapshot)
-                elif snapshot["type"] == "code_interpreter":
-                    snapshot = CodeInterpreterToolCall(**snapshot)
                 elif snapshot["type"] == "file_search":
                     snapshot = FileSearchToolCall(**snapshot)
                 else:
@@ -98,7 +88,6 @@ def create_term_handler(agency=None) -> Type[AgencyEventHandler]:
         def on_tool_call_done(self, snapshot):
             self._message_output = None
 
-            # TODO: add support for code interpreter and retrieval tools
             if snapshot.type != "function":
                 return
 

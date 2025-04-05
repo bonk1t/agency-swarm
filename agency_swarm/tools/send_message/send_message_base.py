@@ -1,12 +1,13 @@
 from abc import ABC
-from typing import ClassVar, Union
+from typing import TYPE_CHECKING, ClassVar, Union
 
 from pydantic import Field, field_validator
 
-from agency_swarm.agents.agent import Agent
 from agency_swarm.threads.thread import Thread
-from agency_swarm.threads.thread_async import ThreadAsync
 from agency_swarm.tools import BaseTool
+
+if TYPE_CHECKING:
+    from agency_swarm.agents.agent import Agent
 
 
 class SendMessageBase(BaseTool, ABC):
@@ -26,13 +27,13 @@ class SendMessageBase(BaseTool, ABC):
             return "\n".join(value)
         return value
 
-    def _get_thread(self) -> Thread | ThreadAsync:
+    def _get_thread(self) -> Thread:
         return self._agents_and_threads[self._caller_agent.name][self.recipient.value]
 
-    def _get_main_thread(self) -> Thread | ThreadAsync:
+    def _get_main_thread(self) -> Thread:
         return self._agents_and_threads["main_thread"]
 
-    def _get_recipient_agent(self) -> Agent:
+    def _get_recipient_agent(self) -> "Agent":
         return self._agents_and_threads[self._caller_agent.name][
             self.recipient.value
         ].recipient_agent
@@ -41,16 +42,22 @@ class SendMessageBase(BaseTool, ABC):
         thread = self._get_thread()
 
         if self.ToolConfig.async_mode == "threading":
-            return thread.get_completion_async(
+            return thread.get_response_async(
                 message=message,
                 parent_run_id=self._tool_call.id,
                 **kwargs,
             )
         else:
-            return thread.get_completion(
-                message=message,
-                event_handler=self._event_handler,
-                yield_messages=not self._event_handler,
-                parent_run_id=self._tool_call.id,
-                **kwargs,
-            )
+            if self._event_handler:
+                return thread.get_response_stream(
+                    message=message,
+                    event_handler=self._event_handler,
+                    parent_run_id=self._tool_call.id,
+                    **kwargs,
+                )
+            else:
+                return thread.get_response(
+                    message=message,
+                    parent_run_id=self._tool_call.id,
+                    **kwargs,
+                )
