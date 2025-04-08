@@ -20,6 +20,8 @@ from agency_swarm.util.oai import get_openai_client
 from agency_swarm.util.streaming.agency_event_handler import AgencyEventHandler
 from agency_swarm.util.tracking.tracking_manager import TrackingManager
 
+from .thread_async import ThreadAsync
+
 if TYPE_CHECKING:
     from agency_swarm.agents import Agent
 
@@ -527,6 +529,11 @@ class Thread:
             tool_calls, response.id, parent_run_id
         )
 
+        # If this is an async thread, update tool call tracking
+        if isinstance(self, ThreadAsync):
+            self._tool_calls_in_progress = tool_calls.copy()
+            self._tool_results.clear()
+
         # Split into sync and async tool calls
         sync_tool_calls, async_tool_calls = self._get_sync_async_tool_calls(
             tool_calls, recipient_agent
@@ -557,6 +564,9 @@ class Thread:
                                 "tool_call_id": tool_call.id,
                             }
                         )
+                        if isinstance(self, ThreadAsync):
+                            self._tool_results[tool_call.id] = result
+                            self._tool_calls_in_progress.remove(tool_call)
                         self.tracking_manager.track_tool_end(
                             output=result,
                             tool_call=tool_call,
@@ -564,6 +574,9 @@ class Thread:
                             is_retriever=tool_call.type == "file_search",
                         )
                     except Exception as e:
+                        if isinstance(self, ThreadAsync):
+                            self._tool_results[tool_call.id] = str(e)
+                            self._tool_calls_in_progress.remove(tool_call)
                         self.tracking_manager.track_tool_error(
                             error=e,
                             tool_call=tool_call,
@@ -593,6 +606,9 @@ class Thread:
                     try:
                         self._check_agent_calls(recipient_agent.name, target_agent.name)
                     except RuntimeError as e:
+                        if isinstance(self, ThreadAsync):
+                            self._tool_results[tool_call.id] = str(e)
+                            self._tool_calls_in_progress.remove(tool_call)
                         tool_outputs.append(
                             {
                                 "role": "tool",
@@ -613,6 +629,10 @@ class Thread:
                             message=args["message"], parent_run_id=tool_call.id
                         )
 
+                        if isinstance(self, ThreadAsync):
+                            self._tool_results[tool_call.id] = result.content
+                            self._tool_calls_in_progress.remove(tool_call)
+
                         tool_outputs.append(
                             {
                                 "role": "tool",
@@ -631,6 +651,11 @@ class Thread:
                         recipient_agent=recipient_agent,
                         event_handler=event_handler,
                     )
+
+                    if isinstance(self, ThreadAsync):
+                        self._tool_results[tool_call.id] = result
+                        self._tool_calls_in_progress.remove(tool_call)
+
                     tool_outputs.append(
                         {
                             "role": "tool",
@@ -649,6 +674,9 @@ class Thread:
 
             except Exception as e:
                 # Track tool error
+                if isinstance(self, ThreadAsync):
+                    self._tool_results[tool_call.id] = str(e)
+                    self._tool_calls_in_progress.remove(tool_call)
                 self.tracking_manager.track_tool_error(
                     error=e,
                     tool_call=tool_call,

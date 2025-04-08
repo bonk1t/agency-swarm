@@ -20,6 +20,8 @@ class ThreadAsync(Thread):
         self.response = None
         self._is_processing = False
         self._error = None
+        self._tool_calls_in_progress = []  # Track ongoing tool calls
+        self._tool_results = {}  # Store tool call results
 
     def worker(
         self,
@@ -37,10 +39,11 @@ class ThreadAsync(Thread):
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
 
-        try:
-            self._is_processing = True
-            self._error = None
+        # Set processing state
+        self._is_processing = True
+        self._tool_calls_in_progress = []
 
+        try:
             # Get response using base Thread implementation
             response = loop.run_until_complete(
                 self.get_response(
@@ -53,15 +56,23 @@ class ThreadAsync(Thread):
                 )
             )
 
-            # Store the AgentResponse object
+            # Store successful response and clear error
             self.response = response
+            self._error = None
+            self._tool_calls_in_progress = []
 
         except Exception as e:
+            # Store error response but keep previous successful response
             self._error = e
-            self.response = AgentResponse.from_error(
-                e, sender_name=self.recipient_agent.name, receiver_name=self.agent.name
-            )
+            self._tool_calls_in_progress = []
+            if not self.response:  # Only create error response if no previous response
+                self.response = AgentResponse.from_error(
+                    e,
+                    sender_name=self.recipient_agent.name,
+                    receiver_name=self.agent.name,
+                )
         finally:
+            # Only clear processing flag, keep response and error state
             self._is_processing = False
             loop.close()
 
@@ -113,11 +124,14 @@ class ThreadAsync(Thread):
         Returns:
             Status message indicating:
             - If agent is ready for new messages
-            - If task is still processing
+            - If task is still processing (including current tool calls)
             - The response content if complete
             - Error message if task failed
         """
         if self._is_processing:
+            if self._tool_calls_in_progress:
+                tool_names = [t.function.name for t in self._tool_calls_in_progress]
+                return f"System Notification: 'Task is in progress. Currently executing tools: {', '.join(tool_names)}'"
             return "System Notification: 'Task is still in progress. Please try again later.'"
 
         if not self.response:
@@ -145,3 +159,5 @@ class ThreadAsync(Thread):
         self.response = None
         self._error = None
         self._is_processing = False
+        self._tool_calls_in_progress = []
+        self._tool_results = {}

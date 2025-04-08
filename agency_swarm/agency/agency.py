@@ -30,18 +30,20 @@ from rich.console import Console
 from agency_swarm.agents import Agent
 from agency_swarm.messages import AgentResponse, MessageOutput
 from agency_swarm.threads import Thread, ThreadsCallbacks
+from agency_swarm.threads.thread_async import ThreadAsync
 from agency_swarm.tools import FileSearch, SendMessage
 from agency_swarm.tools.oai.file_search import FileSearchConfig
 from agency_swarm.tools.send_message.send_message_base import SendMessageBase
-from agency_swarm.tracking import AgencyEventHandler, TrackingManager
 from agency_swarm.user import User
 from agency_swarm.util.errors import RefusalError
 from agency_swarm.util.files import get_file_purpose
 from agency_swarm.util.shared_state import SharedState
 from agency_swarm.util.streaming import (
+    AgencyEventHandler,
     create_gradio_handler,
     create_term_handler,
 )
+from agency_swarm.util.tracking.tracking_manager import TrackingManager
 
 console = Console()
 T = TypeVar("T", bound=BaseModel)
@@ -1314,7 +1316,7 @@ class Agency:
     def _thread_type(self):
         """Get the thread type based on async mode."""
         if self.async_mode == "threading":
-            return Thread
+            return ThreadAsync
         return Thread
 
     def _configure_file_search(self, agent: Agent, file_ids: List[str]):
