@@ -1,25 +1,27 @@
 import re
 
+from openai.types.responses.file_search_tool import FileSearchTool
 from typing_extensions import override
 
 from agency_swarm.agents import Agent
-from agency_swarm.tools import FileSearch
 from agency_swarm.util.validators import llm_validator
 
 
 class Devid(Agent):
-    def __init__(self):
+    def __init__(self, **kwargs):
         super().__init__(
             name="Devid",
             description="Devid is an AI software engineer capable of performing advanced coding tasks.",
             instructions="./instructions.md",
             files_folder="./files",
             schemas_folder="./schemas",
-            tools=[FileSearch],
+            tools=[FileSearchTool],
             tools_folder="./tools",
-            validation_attempts=1,
+            validation_attempts=25,
             temperature=0,
             max_prompt_tokens=25000,
+            model="gpt-4o",
+            **kwargs,
         )
 
     @override

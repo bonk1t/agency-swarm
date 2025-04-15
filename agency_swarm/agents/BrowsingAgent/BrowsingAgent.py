@@ -4,7 +4,6 @@ import re
 from typing_extensions import override
 
 from agency_swarm.agents import Agent
-from agency_swarm.tools.oai import FileSearch
 
 
 class BrowsingAgent(Agent):

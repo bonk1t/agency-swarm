@@ -1,10 +1,12 @@
 from abc import ABC
-from typing import TYPE_CHECKING, ClassVar, Union
+from typing import TYPE_CHECKING, ClassVar
 
-from pydantic import Field, field_validator
+from pydantic import Field
 
+from agency_swarm.messages.agent_response import AgentResponse
 from agency_swarm.threads.thread import Thread
 from agency_swarm.tools import BaseTool
+from agency_swarm.user import User
 
 if TYPE_CHECKING:
     from agency_swarm.agents.agent import Agent
@@ -16,29 +18,24 @@ class SendMessageBase(BaseTool, ABC):
         description="Recipient agent that you want to send the message to. This field will be overriden inside the agency class.",
     )
 
-    _agents_and_threads: ClassVar = None
-
-    @field_validator("additional_instructions", mode="before", check_fields=False)
-    @classmethod
-    def validate_additional_instructions(cls, value):
-        # previously the parameter was a list, now it's a string
-        # add compatibility for old code
-        if isinstance(value, list):
-            return "\n".join(value)
-        return value
+    _threads: ClassVar[dict[str, Thread]] = (
+        None  # it's just a pointer to the agency's threads (agency.threads)
+    )
+    # TODO: stop storing data in class attributes, it's not scalable
 
     def _get_thread(self) -> Thread:
-        return self._agents_and_threads[self._caller_agent.name][self.recipient.value]
+        """Get the thread for communication with the recipient agent."""
+        return self._threads[f"{self._caller_agent.name}->{self.recipient}"]
 
-    def _get_main_thread(self) -> Thread:
-        return self._agents_and_threads["main_thread"]
+    def _get_user_thread(self) -> Thread:
+        """Get the thread for communication with the user."""
+        return self._threads[f"user->{self._caller_agent.name}"]
 
     def _get_recipient_agent(self) -> "Agent":
-        return self._agents_and_threads[self._caller_agent.name][
-            self.recipient.value
-        ].recipient_agent
+        """Get the recipient agent instance."""
+        return self._threads[f"{self._caller_agent.name}->{self.recipient}"].recipient
 
-    def _get_completion(self, message: Union[str, None] = None, **kwargs):
+    def _get_response(self, message: str | None = None, **kwargs) -> AgentResponse:
         thread = self._get_thread()
 
         if self.ToolConfig.async_mode == "threading":

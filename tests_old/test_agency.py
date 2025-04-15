@@ -255,13 +255,9 @@ class AgencyTest(unittest.TestCase):
             f"Error found in message: {message}. Thread url: {self.__class__.agency.main_thread.thread_url}",
         )
 
-        self.assertTrue(self.__class__.agency.agents_and_threads["main_thread"].id)
-        self.assertTrue(
-            self.__class__.agency.agents_and_threads["CEO"]["TestAgent1"].id
-        )
-        self.assertTrue(
-            self.__class__.agency.agents_and_threads["TestAgent1"]["TestAgent2"].id
-        )
+        self.assertTrue(self.__class__.agency.threads["main_thread"].id)
+        self.assertTrue(self.__class__.agency.threads["CEO"]["TestAgent1"].id)
+        self.assertTrue(self.__class__.agency.threads["TestAgent1"]["TestAgent2"].id)
 
         for agent in self.__class__.agency.agents:
             self.assertTrue(
@@ -290,9 +286,9 @@ class AgencyTest(unittest.TestCase):
         )
         self.assertTrue(run.tool_choice.type == "function")
 
-        agent1_thread = self.__class__.agency.agents_and_threads[
-            self.__class__.ceo.name
-        ][self.__class__.agent1.name]
+        agent1_thread = self.__class__.agency.threads[self.__class__.ceo.name][
+            self.__class__.agent1.name
+        ]
 
         agent1_thread_id = agent1_thread.id
 
@@ -308,9 +304,9 @@ class AgencyTest(unittest.TestCase):
         self.assertTrue(agent1_run.truncation_strategy.last_messages == 10)
         self.assertFalse(agent1_run.parallel_tool_calls)
 
-        agent2_thread = self.__class__.agency.agents_and_threads[
-            self.__class__.agent1.name
-        ][self.__class__.agent2.name]
+        agent2_thread = self.__class__.agency.threads[self.__class__.agent1.name][
+            self.__class__.agent2.name
+        ]
 
         agent2_message = agent2_thread._get_last_message_text()
 
@@ -362,18 +358,14 @@ class AgencyTest(unittest.TestCase):
 
         self.assertTrue(self.__class__.TestTool._shared_state.get("test_tool_used"))
 
-        agent1_thread = self.__class__.agency.agents_and_threads[
-            self.__class__.ceo.name
-        ][self.__class__.agent1.name]
+        agent1_thread = self.__class__.agency.threads[self.__class__.ceo.name][
+            self.__class__.agent1.name
+        ]
         self.assertFalse(agent1_thread._run.parallel_tool_calls)
 
         self.assertTrue(self.__class__.agency.main_thread.id)
-        self.assertTrue(
-            self.__class__.agency.agents_and_threads["CEO"]["TestAgent1"].id
-        )
-        self.assertTrue(
-            self.__class__.agency.agents_and_threads["TestAgent1"]["TestAgent2"].id
-        )
+        self.assertTrue(self.__class__.agency.threads["CEO"]["TestAgent1"].id)
+        self.assertTrue(self.__class__.agency.threads["TestAgent1"]["TestAgent2"].id)
 
         for agent in self.__class__.agency.agents:
             self.assertTrue(
@@ -432,24 +424,24 @@ class AgencyTest(unittest.TestCase):
         print("previous_loaded_thread_ids", previous_loaded_thread_ids)
         print("self.__class__.loaded_thread_ids", self.__class__.loaded_thread_ids)
         # Start of Selection
-        for agent, threads in self.__class__.agency.agents_and_threads.items():
+        for agent, threads in self.__class__.agency.threads.items():
             if agent == "main_thread":
                 print("main_thread", threads)
                 continue
             for other_agent, thread in threads.items():
                 print(f"Thread ID between {agent} and {other_agent}: {thread.id}")
         self.assertTrue(
-            self.__class__.agency.agents_and_threads["main_thread"].id
+            self.__class__.agency.threads["main_thread"].id
             == previous_loaded_thread_ids["main_thread"]
             == self.__class__.loaded_thread_ids["main_thread"]
         )
         self.assertTrue(
-            self.__class__.agency.agents_and_threads["CEO"]["TestAgent1"].id
+            self.__class__.agency.threads["CEO"]["TestAgent1"].id
             == previous_loaded_thread_ids["CEO"]["TestAgent1"]
             == self.__class__.loaded_thread_ids["CEO"]["TestAgent1"]
         )
         self.assertTrue(
-            self.__class__.agency.agents_and_threads["TestAgent1"]["TestAgent2"].id
+            self.__class__.agency.threads["TestAgent1"]["TestAgent2"].id
             == previous_loaded_thread_ids["TestAgent1"]["TestAgent2"]
             == self.__class__.loaded_thread_ids["TestAgent1"]["TestAgent2"]
         )
@@ -545,9 +537,7 @@ class AgencyTest(unittest.TestCase):
             )
 
         self.assertTrue(self.__class__.agency.main_thread.id)
-        self.assertTrue(
-            self.__class__.agency.agents_and_threads["TestAgent1"]["TestAgent2"].id
-        )
+        self.assertTrue(self.__class__.agency.threads["TestAgent1"]["TestAgent2"].id)
 
         for agent in self.__class__.agency.agents:
             self.assertTrue(

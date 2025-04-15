@@ -1,32 +1,56 @@
 from __future__ import annotations
 
+import logging
 import threading
-from typing import TYPE_CHECKING, List, Union
 
 from openai.types.responses.response_create_params import ToolChoice
 
 from agency_swarm.messages.agent_response import AgentResponse
-from agency_swarm.threads import Thread
-from agency_swarm.user import User
+from agency_swarm.threads.thread import Thread
 
-if TYPE_CHECKING:
-    from agency_swarm.agents import Agent
+logger = logging.getLogger(__name__)
 
 
 class ThreadAsync(Thread):
-    def __init__(self, agent: Union[Agent, User], recipient_agent: "Agent"):
-        super().__init__(agent, recipient_agent)
+    """Asynchronous version of Thread that supports non-blocking tool execution.
+
+    This class extends Thread to provide non-blocking agent communication.
+    The key differences from Thread are:
+    1. Uses threading for non-blocking execution
+    2. Provides status checking and result retrieval
+    3. Maintains state for async tool execution
+    """
+
+    def __init__(self, *args, **kwargs):
+        """Initialize ThreadAsync with proper attribute initialization.
+
+        Ensures that all async-specific attributes are properly initialized
+        before any tool calls or error handling can occur.
+        """
+        # Import Thread here to avoid circular import
+        from agency_swarm.threads.thread import Thread
+
+        if not isinstance(self, Thread):
+            Thread.__init__(self, *args, **kwargs)
+
+        # Initialize tracking attributes for async tool execution
+        self._tool_calls_in_progress = []  # Track currently executing tools
+        self._tool_results = {}  # Store results as they complete
+
+        # Set async mode to tools_threading by default for this class
+        self.async_mode = kwargs.get("async_mode", "tools_threading")
+
+        logger.debug(f"Initialized ThreadAsync with async_mode={self.async_mode}")
+
         self.pythread = None
         self.response = None
         self._is_processing = False
         self._error = None
-        self._tool_calls_in_progress = []  # Track ongoing tool calls
-        self._tool_results = {}  # Store tool call results
 
     def worker(
         self,
-        message: str | list[dict],
-        message_files: List[str] = None,
+        message: str,
+        message_files: list[str] = None,
         recipient_agent=None,
         additional_instructions: str = None,
         tool_choice: ToolChoice | None = None,
@@ -45,7 +69,7 @@ class ThreadAsync(Thread):
 
         try:
             # Get response using base Thread implementation
-            response = loop.run_until_complete(
+            response: AgentResponse = loop.run_until_complete(
                 self.get_response(
                     message=message,
                     message_files=message_files,
@@ -57,7 +81,7 @@ class ThreadAsync(Thread):
             )
 
             # Store successful response and clear error
-            self.response = response
+            self.response: AgentResponse = response
             self._error = None
             self._tool_calls_in_progress = []
 
@@ -68,8 +92,8 @@ class ThreadAsync(Thread):
             if not self.response:  # Only create error response if no previous response
                 self.response = AgentResponse.from_error(
                     e,
-                    sender_name=self.recipient_agent.name,
-                    receiver_name=self.agent.name,
+                    sender_name=self.sender.name,
+                    receiver_name=self.recipient.name,
                 )
         finally:
             # Only clear processing flag, keep response and error state
@@ -78,17 +102,17 @@ class ThreadAsync(Thread):
 
     def get_response_async(
         self,
-        message: str | list[dict],
-        message_files: List[str] = None,
+        message: str,
+        message_files: list[str] = None,
         recipient_agent=None,
         additional_instructions: str = None,
         tool_choice: ToolChoice | None = None,
         parent_run_id: str | None = None,
-    ) -> str:
+    ) -> AgentResponse:  # TODO: update this method to return AgentResponse
         """Start async processing of a message.
 
         Args:
-            message: The message to send (string or list of message dicts)
+            message: The message to send (string)
             message_files: Optional list of file IDs
             recipient_agent: Optional specific agent to send to
             additional_instructions: Optional additional instructions
@@ -96,10 +120,18 @@ class ThreadAsync(Thread):
             parent_run_id: Optional parent run ID for tracking
 
         Returns:
-            Initial notification message
+            dict: Message in Responses API format with type and content fields
         """
         if self._is_processing:
-            return "System Notification: 'Agent is busy processing a request. Please check status later.'"
+            return {
+                "role": "system",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "Agent is busy processing a request. Please check status later.",
+                    }
+                ],
+            }
 
         self.pythread = threading.Thread(
             target=self.worker,
@@ -114,15 +146,23 @@ class ThreadAsync(Thread):
         )
 
         self.pythread.start()
-        return (
-            "System Notification: 'Task has started. You can check the status later.'"
-        )
+        return {
+            "role": "system",
+            "content": [
+                {
+                    "type": "text",
+                    "text": "Task has started. You can check the status later.",
+                }
+            ],
+        }
 
-    def check_status(self) -> str:
+    def check_status(
+        self,
+    ) -> AgentResponse:  # TODO: update this method to return AgentResponse
         """Check status of async response.
 
         Returns:
-            Status message indicating:
+            dict: Message in Responses API format indicating:
             - If agent is ready for new messages
             - If task is still processing (including current tool calls)
             - The response content if complete
@@ -131,20 +171,56 @@ class ThreadAsync(Thread):
         if self._is_processing:
             if self._tool_calls_in_progress:
                 tool_names = [t.function.name for t in self._tool_calls_in_progress]
-                return f"System Notification: 'Task is in progress. Currently executing tools: {', '.join(tool_names)}'"
-            return "System Notification: 'Task is still in progress. Please try again later.'"
+                return {
+                    "role": "system",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": f"Task is in progress. Currently executing tools: {', '.join(tool_names)}",
+                        }
+                    ],
+                }
+            return {
+                "role": "system",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "Task is still in progress. Please try again later.",
+                    }
+                ],
+            }
 
         if not self.response:
-            return "System Notification: 'Agent is ready to receive a message.'"
+            return {
+                "role": "system",
+                "content": [
+                    {"type": "text", "text": "Agent is ready to receive a message."}
+                ],
+            }
 
         if self._error:
-            return f"System Notification: 'Task failed with error: {str(self._error)}'"
+            return {
+                "role": "system",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": f"Task failed with error: {str(self._error)}",
+                    }
+                ],
+            }
 
-        # Return the actual response content
         if isinstance(self.response, AgentResponse):
-            return f"{self.recipient_agent.name}'s Response: '{self.response.content}'"
+            return {
+                "role": "assistant",
+                "content": [{"type": "text", "text": self.response.content}],
+            }
 
-        return "System Notification: 'Unknown response state. Please try again.'"
+        return {
+            "role": "system",
+            "content": [
+                {"type": "text", "text": "Unknown response state. Please try again."}
+            ],
+        }
 
     def is_busy(self) -> bool:
         """Check if the agent is currently processing a request."""

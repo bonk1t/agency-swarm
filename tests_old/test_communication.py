@@ -75,7 +75,7 @@ def test_send_message_swarm(test_agents):
     main_thread = agency.main_thread
 
     # check if recipient agent is correct
-    assert main_thread.recipient_agent == customer_support
+    assert main_thread.recipient == customer_support
 
     # check if all messages in the same thread (this is how Swarm works)
     assert (

@@ -4,7 +4,7 @@ sys.path.insert(0, "./agency-swarm")
 
 from agency_swarm import Agent
 from agency_swarm.agency.agency import Agency
-from agency_swarm.tools.BaseTool import BaseTool
+from agency_swarm.tools.base_tool import BaseTool
 from agency_swarm.tools.oai import FileSearch
 
 

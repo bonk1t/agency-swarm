@@ -14,8 +14,8 @@ sys.path.insert(0, "../agency-swarm")
 def custom_serializer(obj):
     if isinstance(obj, Thread):
         return {
-            "agent": obj.agent.name,
-            "recipient_agent": obj.recipient_agent.name,
+            "sender": obj.sender.name,
+            "recipient": obj.recipient.name,
         }
     raise TypeError(f"Type {type(obj)} not serializable")
 
@@ -33,7 +33,7 @@ def main():
         ]
     )
 
-    print(json.dumps(agency.agents_and_threads, indent=4, default=custom_serializer))
+    print(json.dumps(agency.threads, indent=4, default=custom_serializer))
 
     print("Ceo Tools: ", agency.ceo.tools)
 

@@ -6,10 +6,13 @@ from typing import (
     AsyncIterator,
     Literal,
     Optional,
+    Type,
     TypedDict,
     Union,
 )
 
+from openai.types.responses.file_search_tool import FileSearchTool
+from openai.types.responses.file_search_tool_param import FileSearchToolParam
 from openai.types.responses.response_create_params import ToolChoice
 
 from agency_swarm.constants import DEFAULT_MODEL
@@ -17,15 +20,14 @@ from agency_swarm.messages import AgentResponse
 from agency_swarm.threads import Thread
 from agency_swarm.tools import (
     BaseTool,
-    FileSearch,
     SendMessage,
 )
-from agency_swarm.tools.oai.file_search import FileSearchConfig
-from agency_swarm.tools.ToolFactory import ToolFactory
+from agency_swarm.tools.tool_factory import ToolFactory
 from agency_swarm.types import ThreadsCallbacks
 from agency_swarm.user import User
 from agency_swarm.util.oai import get_openai_client
 from agency_swarm.util.openapi import validate_openapi_spec
+from agency_swarm.util.streaming.agency_event_handler import AgencyEventHandler
 
 
 class ExampleMessage(TypedDict):
@@ -51,7 +53,7 @@ class Agent:
         name: str = None,
         description: str = "",
         instructions: str = "",
-        tools: list[Union[type[BaseTool], type[FileSearch]]] = None,
+        tools: list[Union[type[BaseTool], type[FileSearchTool]]] = None,
         temperature: float = None,
         top_p: float = 1.0,
         response_format: Union[str, dict, type] = "auto",
@@ -68,7 +70,7 @@ class Agent:
         max_completion_tokens: int = None,
         truncation_strategy: dict = None,
         examples: list[ExampleMessage] = None,
-        file_search: FileSearchConfig = None,
+        file_search: FileSearchToolParam = None,
         parallel_tool_calls: bool = True,
         threads_callbacks: ThreadsCallbacks = None,
     ):
@@ -205,9 +207,8 @@ class Agent:
 
         # Create thread with state management
         thread = Thread(
-            agent=User(),
-            recipient_agent=self,
-            previous_response_id=self.previous_response_id,
+            sender=User(),
+            recipient=self,
             messages=self.messages,
         )
 
@@ -222,6 +223,7 @@ class Agent:
     async def get_response_stream(
         self,
         message: str,
+        event_handler: Type[AgencyEventHandler],
         message_files: list[str] | None = None,
         additional_instructions: str | None = None,
         tool_choice: ToolChoice | None = None,
@@ -234,6 +236,7 @@ class Agent:
 
         Args:
             message: The message to send
+            event_handler: Handler for streaming events
             message_files: Optional list of file IDs
             additional_instructions: Optional additional instructions
             tool_choice: Optional tool choice
@@ -251,14 +254,14 @@ class Agent:
 
         # Create thread with state management
         thread = Thread(
-            agent=User(),
-            recipient_agent=self,
-            previous_response_id=self.previous_response_id,
+            sender=User(),
+            recipient=self,
             messages=self.messages,
         )
 
         async for response in thread.get_response_stream(
             message=message,
+            event_handler=event_handler,
             message_files=message_files,
             additional_instructions=additional_instructions,
             tool_choice=tool_choice,
@@ -402,13 +405,13 @@ class Agent:
 
         # Configure FileSearch with uploaded file IDs if we have any
         if file_search_ids:
-            if FileSearch not in self.tools:
+            if FileSearchTool not in self.tools:
                 print("Adding FileSearch tool for uploaded files...")
-                self.add_tool(FileSearch)
+                self.add_tool(FileSearchTool)
 
             # Configure FileSearch with uploaded file IDs
             if not self.file_search:
-                self.file_search = FileSearchConfig()
+                self.file_search = FileSearchToolParam()
             self.file_search.file_ids = file_search_ids
 
         return file_search_ids
@@ -446,7 +449,7 @@ class Agent:
         if not isinstance(tool, type):
             raise Exception("Tool must not be initialized.")
 
-        subclasses = [FileSearch]
+        subclasses = [FileSearchTool]
         for subclass in subclasses:
             if issubclass(tool, subclass):
                 if not any(issubclass(t, subclass) for t in self.tools):
@@ -469,7 +472,7 @@ class Agent:
                 print(tool)
                 raise Exception("Tool must not be initialized.")
 
-            if issubclass(tool, FileSearch):
+            if issubclass(tool, FileSearchTool):
                 tools.append(
                     tool(file_search=self.file_search).model_dump(exclude_none=True)
                 )
@@ -596,7 +599,7 @@ class Agent:
             self.tool_resources = {}
 
         if tool_resource == "file_search":
-            if FileSearch not in self.tools:
+            if FileSearchTool not in self.tools:
                 raise Exception("FileSearch tool not found in tools.")
 
             if (

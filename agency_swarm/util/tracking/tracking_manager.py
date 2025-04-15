@@ -2,11 +2,7 @@ import json
 from typing import Any
 from uuid import uuid4
 
-from openai.types.beta.threads.message import Message
-from openai.types.beta.threads.run import RequiredActionFunctionToolCall, Run
-from openai.types.beta.threads.runs.tool_call import ToolCall
-
-from agency_swarm.messages.message_output import MessageOutput
+from agency_swarm.messages import AgentResponse
 from agency_swarm.util.tracking import get_callback_handler
 from agency_swarm.util.tracking.langchain_types import AgentAction
 
@@ -17,8 +13,8 @@ class TrackingManager:
 
     def track_tool_start(
         self,
-        tool_call: ToolCall,
-        run: Run,
+        tool_call: Any,  # TODO: fix type
+        run: Any,  # TODO: fix type
         agent_name: str,
         recipient_agent_name: str,
         is_retriever: bool = False,
@@ -54,7 +50,7 @@ class TrackingManager:
     def track_tool_end(
         self,
         output: Any,
-        tool_call: ToolCall,
+        tool_call: Any,  # TODO: fix type
         parent_run_id: str,
         is_retriever: bool = False,
     ) -> None:
@@ -78,7 +74,7 @@ class TrackingManager:
     def track_tool_error(
         self,
         error: Exception,
-        tool_call: ToolCall,
+        tool_call: Any,  # TODO: fix type
         parent_run_id: str,
         is_retriever: bool = False,
     ) -> None:
@@ -101,7 +97,7 @@ class TrackingManager:
 
     def track_agent_actions(
         self,
-        tool_calls: list[RequiredActionFunctionToolCall],
+        tool_calls: list[Any],  # TODO: fix type
         run_id: str,
         parent_run_id: str | None = None,
     ) -> None:
@@ -166,20 +162,18 @@ class TrackingManager:
 
     def start_run(
         self,
-        message: str | list[dict] | None,
+        message: str | None,
         sender_agent: str,
         recipient_agent: str,
         model: str,
         run_id: str,
         parent_run_id: str | None,
-        message_obj: Message | None = None,
+        message_obj: Any | None = None,  # TODO: fix type
         temperature: float | None = None,
     ) -> None:
         """Track the start of a run."""
         if not self.callback_handler:
             return
-
-        prompts = [str(m) for m in message] if isinstance(message, list) else [message]
 
         metadata = {
             "agent_name": sender_agent,
@@ -199,7 +193,7 @@ class TrackingManager:
                 "name": f"Thread: {sender_agent} -> {recipient_agent}",
                 "id": [run_id],
             },
-            prompts=prompts,
+            prompts=[message],
             run_id=run_id,
             parent_run_id=parent_run_id,
             metadata=metadata,
@@ -208,7 +202,7 @@ class TrackingManager:
 
     def end_run(
         self,
-        message_output: MessageOutput,
+        agent_response: AgentResponse,
         run_id: str,
         parent_run_id: str | None = None,
     ) -> None:
@@ -218,13 +212,11 @@ class TrackingManager:
 
         from langchain_core.outputs import Generation, LLMResult
 
-        generation = Generation(text=message_output.content)
+        generation = Generation(text=agent_response.content)
 
         result = LLMResult(generations=[[generation]])
 
-        metadata = {
-            "message_obj": message_output.obj.model_dump() if message_output.obj else {}
-        }
+        metadata = {"raw_response": str(agent_response.raw_response)}
 
         self.callback_handler.on_llm_end(
             response=result,

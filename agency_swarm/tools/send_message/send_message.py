@@ -27,7 +27,6 @@ class SendMessage(SendMessageBase):
     message_files: Optional[List[str]] = Field(
         default=None,
         description="A list of file IDs to be sent as attachments to this message. Only use this if you have the file ID that starts with 'file-'.",
-        examples=["file-1234", "file-5678"],
     )
     additional_instructions: Optional[str] = Field(
         default=None,
@@ -47,7 +46,7 @@ class SendMessage(SendMessageBase):
         return self
 
     def run(self):
-        return self._get_completion(
+        return self._get_response(
             message=self.message,
             message_files=self.message_files,
             additional_instructions=self.additional_instructions,

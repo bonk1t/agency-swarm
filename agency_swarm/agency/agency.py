@@ -1,39 +1,36 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
 import inspect
 import json
+import logging
 import os
 import queue
+import sys
 import threading
 import uuid
 import warnings
 from enum import Enum
 from typing import (
     AsyncIterator,
-    Dict,
-    Generator,
-    List,
     Literal,
-    Optional,
-    Tuple,
     Type,
     TypeVar,
-    Union,
 )
 
 from openai.lib._parsing._completions import type_to_response_format_param
+from openai.types.responses.file_search_tool import FileSearchTool
+from openai.types.responses.file_search_tool_param import FileSearchToolParam
 from openai.types.responses.response_create_params import ToolChoice
 from pydantic import BaseModel, Field, field_validator
 from rich.console import Console
 
 from agency_swarm.agents import Agent
-from agency_swarm.messages import AgentResponse, MessageOutput
-from agency_swarm.threads import Thread, ThreadsCallbacks
-from agency_swarm.threads.thread_async import ThreadAsync
-from agency_swarm.tools import FileSearch, SendMessage
-from agency_swarm.tools.oai.file_search import FileSearchConfig
-from agency_swarm.tools.send_message.send_message_base import SendMessageBase
+from agency_swarm.messages import AgentResponse
+from agency_swarm.threads import Thread
+from agency_swarm.tools import SendMessage, SendMessageBase
+from agency_swarm.types import ThreadsCallbacks
 from agency_swarm.user import User
 from agency_swarm.util.errors import RefusalError
 from agency_swarm.util.files import get_file_purpose
@@ -45,6 +42,7 @@ from agency_swarm.util.streaming import (
 )
 from agency_swarm.util.tracking.tracking_manager import TrackingManager
 
+logger = logging.getLogger(__name__)
 console = Console()
 T = TypeVar("T", bound=BaseModel)
 
@@ -56,20 +54,19 @@ class Agency:
 
     def __init__(
         self,
-        agency_chart: List = None,  # Kept for backwards compatibility
-        entry_points: List[Agent] = None,
-        communication_flows: List[Tuple[Agent, Agent]] = None,
+        agency_chart: list | None = None,
+        entry_points: list[Agent] | None = None,
+        communication_flows: list[tuple[Agent, Agent]] | None = None,
         shared_instructions: str = "",
-        shared_files: Union[str, List[str]] = None,
-        async_mode: Literal["threading", "tools_threading"] = None,
+        shared_files: list[str] | None = None,
+        async_mode: Literal["threading", "tools_threading"] | None = None,
         send_message_tool_class: Type[SendMessageBase] = SendMessage,
-        threads_callbacks: ThreadsCallbacks = None,
-        chat_id: str | None = None,
+        threads_callbacks: ThreadsCallbacks | None = None,
         temperature: float = 0.3,
         top_p: float = 1.0,
-        max_prompt_tokens: int = None,
-        max_completion_tokens: int = None,
-        truncation_strategy: dict = None,
+        max_prompt_tokens: int | None = None,
+        max_completion_tokens: int | None = None,
+        truncation_strategy: dict | None = None,
     ):
         """Initialize the Agency object.
 
@@ -82,7 +79,6 @@ class Agency:
             async_mode: Mode for async processing.
             send_message_tool_class: Class for send_message tool.
             threads_callbacks: Callbacks for thread persistence.
-            chat_id: Optional identifier for the conversation context.
             temperature: Default temperature for agents.
             top_p: Default top_p for agents.
             max_prompt_tokens: Default max prompt tokens.
@@ -92,16 +88,13 @@ class Agency:
         # Initialize basic attributes
         self.ceo = None
         self.user = User()
-        self.agents = []
-        self.agents_and_threads = {}
-        self.main_recipients = []  # Entry point agents
-        self.main_thread = None
-        self.recipient_agents = None
+        self.agents: list[Agent] = []
+        self.entry_points: list[Agent] = []  # Store entry point agents
+        self.threads: dict[str, Thread] = {}  # Initialize empty threads dictionary
         self.shared_files = shared_files if shared_files else []
         self.async_mode = async_mode
         self.send_message_tool_class = send_message_tool_class
         self.threads_callbacks = threads_callbacks
-        self.chat_id = chat_id or str(uuid.uuid4())
         self.temperature = temperature
         self.top_p = top_p
         self.max_prompt_tokens = max_prompt_tokens
@@ -150,187 +143,180 @@ class Agency:
                 DeprecationWarning,
                 stacklevel=2,
             )
-            self._parse_agency_chart(agency_chart)
+            self._parse_old_agency_chart(agency_chart)
         else:
             if not entry_points:
                 raise ValueError("Must provide at least one entry point agent")
-            self._parse_new_structure(entry_points, communication_flows or [])
+            self._parse_agency_chart(entry_points, communication_flows or [])
 
         self._init_threads()
         self._create_special_tools()
         self._init_agents_sync()
+        self._load_state()
 
-        # Load state if chat_id provided
-        if chat_id and self.threads_callbacks:
-            self._load_state()
-
-    def _load_state(self):
-        """Load thread states from storage."""
-        if not self.threads_callbacks:
-            return
-
-        state = self.threads_callbacks["load"](self.chat_id)
-        if not state:
-            return
-
-        thread_state = state.get("agent_pairs", {})
-
-        # Initialize threads with loaded state
-        for agent_name, threads in self.agents_and_threads.items():
-            if agent_name == "main_thread":
-                continue
-            for other_agent, thread in threads.items():
-                state_key = f"{agent_name}->{other_agent}"
-                if state_key in thread_state:
-                    thread.previous_response_id = thread_state[state_key].get(
-                        "previous_response_id"
-                    )
-                    thread.messages = thread_state[state_key].get("messages", [])
-
-        # Handle main thread separately
-        main_thread_state = thread_state.get("main_thread", {})
-        if main_thread_state:
-            self.main_thread.previous_response_id = main_thread_state.get(
-                "previous_response_id"
-            )
-            self.main_thread.messages = main_thread_state.get("messages", [])
-
-    def _save_state(self):
-        """Save current thread states."""
-        if not self.threads_callbacks:
-            return
-
-        thread_state = {}
-
-        # Save state for all threads
-        for agent_name, threads in self.agents_and_threads.items():
-            if agent_name == "main_thread":
-                continue
-            for other_agent, thread in threads.items():
-                state_key = f"{agent_name}->{other_agent}"
-                thread_state[state_key] = {
-                    "previous_response_id": thread.previous_response_id,
-                    "messages": thread.messages,
-                }
-
-        # Save main thread state
-        thread_state["main_thread"] = {
-            "previous_response_id": self.main_thread.previous_response_id,
-            "messages": self.main_thread.messages,
-        }
-
-        # Save to storage
-        self.threads_callbacks["save"]({self.chat_id: {"agent_pairs": thread_state}})
-
-    def _init_threads(self):
-        """Initialize all threads according to communication flows."""
-        # Load thread state if callbacks exist
-        thread_state = {}
-        if self.threads_callbacks:
-            state = self.threads_callbacks["load"](self.chat_id)
-            thread_state = state.get(self.chat_id, {}).get("agent_pairs", {})
-
-        # Initialize main thread for first entry point (CEO)
-        main_thread_state = thread_state.get("main_thread", {})
-        self.main_thread = Thread(
-            agent=self.user,
-            recipient_agent=self.ceo,
-            previous_response_id=main_thread_state.get("previous_response_id"),
-            messages=main_thread_state.get("messages", []),
-        )
-        self.agents_and_threads["main_thread"] = self.main_thread
-
-        # Initialize user->entry_point threads
-        for agent in self.main_recipients:
-            if agent.name not in self.agents_and_threads:
-                self.agents_and_threads[agent.name] = {}
-
-            # Create thread from user to entry point
-            thread_key = f"user->{agent.name}"
-            state = thread_state.get(thread_key, {})
-            self.agents_and_threads[agent.name]["user"] = Thread(
-                agent=self.user,
-                recipient_agent=agent,
-                previous_response_id=state.get("previous_response_id"),
-                messages=state.get("messages", []),
-            )
-
-        # Initialize agent->agent threads from communication flows
-        for initiator, recipient in self.communication_flows:
-            if initiator.name not in self.agents_and_threads:
-                self.agents_and_threads[initiator.name] = {}
-
-            thread_key = f"{initiator.name}->{recipient.name}"
-            state = thread_state.get(thread_key, {})
-
-            self.agents_and_threads[initiator.name][recipient.name] = Thread(
-                agent=initiator,
-                recipient_agent=recipient,
-                previous_response_id=state.get("previous_response_id"),
-                messages=state.get("messages", []),
-            )
-
-    def _get_thread(self, recipient_agent: Optional["Agent"] = None) -> Thread:
-        """Get the appropriate thread for communication with the recipient agent.
-
-        This method ONLY retrieves existing threads - it does not create them.
-        All threads should be initialized in _init_threads().
+    def _make_thread_key(self, sender: Agent | User, recipient: Agent) -> str:
+        """Generate a consistent thread key in the format 'sender->recipient'.
 
         Args:
-            recipient_agent: The agent to get the thread for. If None, uses the first main recipient.
+            sender: The sender (User or Agent)
+            recipient: The recipient Agent
+
+        Returns:
+            Thread key string in format 'sender->recipient'
+        """
+        return f"{sender.name}->{recipient.name}"
+
+    def _parse_thread_key(self, key: str) -> tuple[str, str]:
+        """Parse a thread key into sender and recipient names.
+
+        Args:
+            key: Thread key in format 'sender->recipient'
+
+        Returns:
+            Tuple of (sender_name, recipient_name)
+
+        Raises:
+            ValueError: If key format is invalid
+        """
+        try:
+            sender, recipient = key.split("->")
+            return sender, recipient
+        except ValueError:
+            raise ValueError(
+                f"Invalid thread key format: {key}. Expected 'sender->recipient'"
+            )
+
+    def _init_threads(self):
+        """Initialize communication threads between agents.
+
+        Creates threads with consistent 'sender->recipient' key format:
+        1. User->Agent threads for entry points (e.g. 'user->AgentName')
+        2. Agent->Agent threads from communication flows (e.g. 'AgentA->AgentB')
+
+        Thread keys are always in the format 'sender->recipient' where:
+        - sender can be 'user' or an agent name
+        - recipient is always an agent name
+        """
+        # Initialize threads for entry points (user->agent communication)
+        for agent in self.entry_points:
+            thread_key = self._make_thread_key(User(), agent)
+            self.threads[thread_key] = Thread(
+                sender=User(), recipient=agent, messages=[]
+            )
+
+        # Initialize threads for agent->agent communication
+        for initiator, recipient in self.communication_flows:
+            thread_key = self._make_thread_key(initiator, recipient)
+            self.threads[thread_key] = Thread(
+                sender=initiator, recipient=recipient, messages=[]
+            )
+
+    def _load_state(self):
+        """Load thread states from storage.
+
+        Loads thread messages from persistent storage using the threads_callbacks.
+        Thread states are stored with consistent 'sender->recipient' keys.
+        """
+        if not self.threads_callbacks:
+            logger.debug("No threads_callbacks, skipping state loading")
+            return
+
+        # Load state directly from callback
+        state = self.threads_callbacks["load"]()
+        logger.debug(f"Loaded state: {state}")
+
+        if not state:
+            logger.debug("No state found")
+            return
+
+        thread_state = state.get("threads", {})
+        logger.debug(f"Thread state: {thread_state}")
+
+        # Initialize threads with loaded state
+        for thread_key, thread in self.threads.items():
+            if thread_key in thread_state:
+                thread.messages = thread_state[thread_key].get("messages", [])
+                logger.debug(
+                    f"Loaded {len(thread.messages)} messages into thread {thread_key}"
+                )
+
+    def _save_state(self):
+        """Save current thread states.
+
+        Saves thread messages to persistent storage using the threads_callbacks.
+        Thread states are stored with consistent 'sender->recipient' keys.
+        """
+        if not self.threads_callbacks:
+            return
+
+        # Build state dictionary using consistent thread keys
+        thread_state = {}
+        for thread_key, thread in self.threads.items():
+            thread_state[thread_key] = {
+                "messages": thread.messages,
+            }
+
+        # Save state through callback
+        self.threads_callbacks["save"]({"threads": thread_state})
+        logger.debug(f"Saved state for {len(thread_state)} threads")
+
+    def _get_thread(self, recipient_agent: Agent | None = None) -> Thread:
+        """Get the appropriate thread for communication with the recipient agent.
+
+        Args:
+            recipient_agent: The agent to get the thread for. If None, uses the first entry point.
 
         Returns:
             Thread: The appropriate Thread instance for communication.
 
         Raises:
-            ValueError: If no thread exists for the given recipient agent.
+            ValueError: If no thread exists for the given recipient agent or if no entry points defined.
         """
+        # If no recipient specified, use first entry point
         if not recipient_agent:
-            if not self.main_recipients:
-                raise ValueError("No main recipients defined in the agency.")
-            recipient_agent = self.main_recipients[0]
-            return self.main_thread
+            if not self.entry_points:
+                raise ValueError("No entry points defined in the agency.")
+            recipient_agent = self.entry_points[0]
+            thread_key = self._make_thread_key(User(), recipient_agent)
+            return self.threads[thread_key]
 
         # For user->entry_point communication
-        if recipient_agent in self.main_recipients:
-            return self.agents_and_threads[recipient_agent.name]["user"]
+        if recipient_agent in self.entry_points:
+            thread_key = self._make_thread_key(User(), recipient_agent)
+            return self.threads[thread_key]
 
         # For agent->agent communication
-        for agent_name, threads in self.agents_and_threads.items():
-            if agent_name == "main_thread":
-                continue
-            if recipient_agent.name in threads:
-                thread = threads[recipient_agent.name]
-                if not isinstance(thread, Thread):
-                    raise RuntimeError(
-                        f"Invalid thread type for {recipient_agent.name}: {type(thread)}"
-                    )
-                return thread
+        for initiator, recipient in self.communication_flows:
+            if recipient == recipient_agent:
+                thread_key = self._make_thread_key(initiator, recipient)
+                thread = self.threads.get(thread_key)
+                if thread:
+                    return thread
 
-        raise ValueError(f"Cannot communicate directly with {recipient_agent.name}")
+        raise ValueError(
+            f"No valid communication path exists to {recipient_agent.name}"
+        )
 
     async def get_response(
         self,
-        message: Union[str, List[Dict[str, str]]],
+        message: str,
         message_files: list[str] | None = None,
         recipient_agent: Agent | None = None,
         additional_instructions: str | None = None,
         tool_choice: ToolChoice | None = None,
         response_format: dict | None = None,
-        parent_run_id: str | None = None,
     ) -> str | AsyncIterator[AgentResponse]:
         """Get a response using the Responses API.
 
         Maintains conversation state and message routing between agents.
 
         Args:
-            message: The message to send
+            message: The message to send (must be a string)
             message_files: Optional list of file IDs
             recipient_agent: Optional specific agent to send to
             additional_instructions: Optional additional instructions
             tool_choice: Optional tool choice
             response_format: Optional response format
-            parent_run_id: Optional parent run ID for tracking
 
         Returns:
             The agent's response
@@ -339,22 +325,16 @@ class Agency:
             ValueError: If message or recipient agent is invalid
         """
         # Validate input
-        if not isinstance(message, (str, list)):
-            raise ValueError("Message must be a string or list of messages")
-
-        if recipient_agent and not isinstance(recipient_agent, Agent):
-            raise ValueError("Invalid recipient agent")
+        if not isinstance(message, str):
+            raise ValueError("Message must be a string")
 
         # Get appropriate thread and set up message flow
         thread = self._get_thread(recipient_agent)
 
-        # If message is sent directly to an agent (not through another agent),
-        # we need to use the User as the sender
-        if recipient_agent and not isinstance(thread.agent, User):
-            thread.agent = User()
+        thread.sender = User()
 
         # Start tracking this response chain if no parent_run_id
-        chain_id = parent_run_id or self.tracking_manager.start_chain(
+        chain_id = self.tracking_manager.start_chain(
             message,
             f"Agency: {recipient_agent.name if recipient_agent else 'main'} chain start",
         )
@@ -417,7 +397,7 @@ class Agency:
         tool_choice: ToolChoice | None = None,
         verbose: bool = False,
         response_format: dict | None = None,
-    ) -> Generator[MessageOutput, None, str] | str:
+    ) -> str:
         """DEPRECATED: Use get_response instead.
 
         This method is kept for backwards compatibility but will be removed in a future version.
@@ -476,7 +456,11 @@ class Agency:
 
         chain_id = self.tracking_manager.start_chain(message, "Agency: chain start")
 
-        res = self.main_thread.get_response_stream(
+        # Get appropriate thread for communication
+        thread = self._get_thread(recipient_agent)
+        thread.sender = User()
+
+        res = thread.get_response_stream(
             message=message,
             event_handler=event_handler,
             message_files=message_files,
@@ -502,9 +486,9 @@ class Agency:
         self,
         message: str,
         response_format: Type[T],
-        message_files: List[str] = None,
-        recipient_agent: Agent = None,
-        additional_instructions: str = None,
+        message_files: list[str] | None = None,
+        recipient_agent: Agent | None = None,
+        additional_instructions: str | None = None,
         tool_choice: ToolChoice | None = None,
     ) -> T:
         """Get a response and parse it using a Pydantic model.
@@ -581,10 +565,10 @@ class Agency:
         self,
         message: str,
         response_format: Type[T],
-        message_files: List[str] = None,
-        recipient_agent: Agent = None,
-        additional_instructions: str = None,
-        attachments: List[dict] = None,
+        message_files: list[str] | None = None,
+        recipient_agent: Agent | None = None,
+        additional_instructions: str | None = None,
+        attachments: list[dict] | None = None,
         tool_choice: ToolChoice | None = None,
         verbose: bool = False,
     ) -> T:
@@ -638,8 +622,8 @@ class Agency:
         images = []
         message_file_names = None
         uploading_files = False
-        recipient_agent_names = [agent.name for agent in self.main_recipients]
-        recipient_agent = self.main_recipients[0]
+        recipient_agent_names = [agent.name for agent in self.entry_points]
+        recipient_agent = self.entry_points[0]
 
         chatbot_queue = queue.Queue()
         gradio_handler_class = create_gradio_handler(chatbot_queue=chatbot_queue)
@@ -677,7 +661,8 @@ class Agency:
 
                             with open(file_obj.name, "rb") as f:
                                 # Upload the file to OpenAI
-                                file = self.main_thread.client.files.create(
+                                thread = self._get_thread(recipient_agent)
+                                file = thread.client.files.create(
                                     file=f, purpose=purpose
                                 )
 
@@ -690,14 +675,14 @@ class Agency:
                                 )
                             else:
                                 # Configure FileSearch with the file ID
-                                if FileSearch not in recipient_agent.tools:
-                                    recipient_agent.tools.append(FileSearch)
+                                if FileSearchTool not in recipient_agent.tools:
+                                    recipient_agent.tools.append(FileSearchTool)
                                     print(
                                         "Added FileSearch tool to recipient agent to analyze the file."
                                     )
 
                                 if not recipient_agent.file_search:
-                                    recipient_agent.file_search = FileSearchConfig()
+                                    recipient_agent.file_search = FileSearchToolParam()
                                 if not recipient_agent.file_search.file_ids:
                                     recipient_agent.file_search.file_ids = []
                                 recipient_agent.file_search.file_ids.append(file.id)
@@ -724,26 +709,11 @@ class Agency:
                 nonlocal attachments
                 nonlocal recipient_agent
 
-                # Check if attachments contain file search or code interpreter types
-                def check_and_add_tools_in_attachments(attachments, recipient_agent):
-                    for attachment in attachments:
-                        for tool in attachment.get("tools", []):
-                            if tool["type"] == "file_search":
-                                if not any(
-                                    isinstance(t, FileSearch)
-                                    for t in recipient_agent.tools
-                                ):
-                                    recipient_agent.tools.append(FileSearch)
-                                    recipient_agent.client.beta.assistants.update(
-                                        recipient_agent.id,
-                                        tools=recipient_agent.get_oai_tools(),
-                                    )
-                                    print(
-                                        "Added FileSearch tool to recipient agent to analyze the file."
-                                    )
-                    return None
-
-                check_and_add_tools_in_attachments(attachments, recipient_agent)
+                # Check for file attachments and add necessary tools
+                self.check_and_add_tools_in_attachments(
+                    [a.get("file_id") for a in attachments if a.get("file_id")],
+                    recipient_agent,
+                )
 
                 if history is None:
                     history = []
@@ -919,7 +889,7 @@ class Agency:
             """
             options = [
                 agent
-                for agent in self.recipient_agents
+                for agent in self.entry_points
                 if agent.lower().startswith(text.lower())
             ]
             if state < len(options):
@@ -941,7 +911,7 @@ class Agency:
         """
         term_handler_class = create_term_handler(agency=self)
 
-        self.recipient_agents = [str(agent.name) for agent in self.main_recipients]
+        self.recipient_agents = [str(agent.name) for agent in self.entry_points]
 
         self._setup_autocomplete()  # Prepare readline for autocomplete
 
@@ -989,54 +959,83 @@ class Agency:
         pass
 
     async def _init_agents(self):
-        """Initialize all agents in the agency."""
-        for agent in self.agents:
-            if "temp_id" in agent.id:
-                agent.id = None
+        """Initialize all agents asynchronously."""
+        # Initialize agents from entry points
+        for agent in self.entry_points:
+            if isinstance(agent, str):
+                # If agent is provided as string, instantiate it
+                agent_class = self._get_agent_class(agent)
+                agent = agent_class(**self.kwargs)
+            self.agents.append(agent)
 
-            agent.add_shared_instructions(self.shared_instructions)
+        # Initialize agents from communication flows
+        for initiator, recipient in self.communication_flows:
+            for agent in (initiator, recipient):
+                if agent not in self.agents:
+                    if isinstance(agent, str):
+                        agent_class = self._get_agent_class(agent)
+                        agent = agent_class(**self.kwargs)
+                    self.agents.append(agent)
 
-            if self.shared_files:
-                if isinstance(self.shared_files, str):
-                    self.shared_files = [self.shared_files]
+    def _get_agent_class(self, agent_name: str) -> Type[Agent]:
+        """
+        Resolve an agent class from a string name.
 
-                if isinstance(agent.files_folder, str):
-                    agent.files_folder = [agent.files_folder]
-                    agent.files_folder += self.shared_files
-                elif isinstance(agent.files_folder, list):
-                    agent.files_folder += self.shared_files
+        Args:
+            agent_name (str): The name of the agent class to resolve. Can be:
+                - A fully qualified import path (e.g. 'my_package.agents.MyAgent')
+                - A class name if the agent is in the current module
 
-            # Initialize agent configuration
-            if self.temperature is not None and agent.temperature is None:
-                agent.temperature = self.temperature
-            if self.top_p and agent.top_p is None:
-                agent.top_p = self.top_p
-            if self.max_prompt_tokens is not None and agent.max_prompt_tokens is None:
-                agent.max_prompt_tokens = self.max_prompt_tokens
-            if (
-                self.max_completion_tokens is not None
-                and agent.max_completion_tokens is None
-            ):
-                agent.max_completion_tokens = self.max_completion_tokens
-            if (
-                self.truncation_strategy is not None
-                and agent.truncation_strategy is None
-            ):
-                agent.truncation_strategy = self.truncation_strategy
+        Returns:
+            Type[Agent]: The resolved agent class
 
-            if not agent.shared_state:
-                agent.shared_state = self.shared_state
+        Raises:
+            ImportError: If the agent class cannot be imported
+            ValueError: If the agent class is not found or is not a subclass of Agent
+        """
+        try:
+            # First try to import as a fully qualified path
+            module_path, class_name = agent_name.rsplit(".", 1)
+            module = importlib.import_module(module_path)
+            agent_class = getattr(module, class_name)
+        except (ValueError, ImportError, AttributeError):
+            # If that fails, try to find the class in the current module
+            try:
+                # Get the module where this Agency class is defined
+                current_module = sys.modules[self.__class__.__module__]
+                agent_class = getattr(current_module, agent_name)
+            except AttributeError:
+                raise ValueError(f"Could not find agent class '{agent_name}'")
 
-            # Initialize files
-            await agent.init_files()
+        # Verify the class is a subclass of Agent
+        if not issubclass(agent_class, Agent):
+            raise ValueError(f"Class '{agent_name}' is not a subclass of Agent")
+
+        return agent_class
 
     def _init_agents_sync(self):
-        """Synchronous wrapper for _init_agents"""
-        return asyncio.run(self._init_agents())
+        """Initialize all agents synchronously."""
+        # Initialize agents from entry points
+        for agent in self.entry_points:
+            if isinstance(agent, str):
+                # If agent is provided as string, instantiate it
+                agent_class = self._get_agent_class(agent)
+                agent = agent_class(**self.kwargs)
+            self.agents.append(agent)
 
-    def _parse_agency_chart(self, agency_chart):
+        # Initialize agents from communication flows
+        for initiator, recipient in self.communication_flows:
+            for agent in (initiator, recipient):
+                if agent not in self.agents:
+                    if isinstance(agent, str):
+                        agent_class = self._get_agent_class(agent)
+                        agent = agent_class(**self.kwargs)
+                    self.agents.append(agent)
+
+    def _parse_old_agency_chart(self, agency_chart):
         """
         Parses the provided agency chart to initialize and organize agents within the agency.
+        DEPRECATED: Use entry_points and communication_flows instead.
 
         Parameters:
             agency_chart: A structure representing the hierarchical organization of agents within the agency.
@@ -1047,50 +1046,55 @@ class Agency:
         threads between them. It raises an exception if the agency chart is invalid or if multiple CEOs are defined.
         """
         if not isinstance(agency_chart, list):
-            raise Exception("Invalid agency chart.")
+            raise ValueError("Agency chart must be a list")
 
         if len(agency_chart) == 0:
-            raise Exception("Agency chart cannot be empty.")
+            raise ValueError("Agency chart cannot be empty")
 
+        # First pass: Add all agents and identify CEO
         for node in agency_chart:
             if isinstance(node, Agent):
                 if not self.ceo:
                     self.ceo = node
                     self._add_agent(self.ceo)
+                    self._add_main_recipient(node)
                 else:
                     self._add_agent(node)
-                self._add_main_recipient(node)
-
+                    self._add_main_recipient(node)
             elif isinstance(node, list):
-                for i, agent in enumerate(node):
+                for agent in node:
                     if not isinstance(agent, Agent):
-                        raise Exception("Invalid agency chart.")
+                        raise ValueError(f"Invalid agent in agency chart: {agent}")
+                    self._add_agent(agent)
+            else:
+                raise ValueError(f"Invalid node type in agency chart: {type(node)}")
 
-                    index = self._add_agent(agent)
+        # Second pass: Set up communication flows
+        for node in agency_chart:
+            if isinstance(node, list):
+                for i in range(len(node) - 1):
+                    current_agent = node[i]
+                    next_agent = node[i + 1]
 
-                    if i == len(node) - 1:
+                    # Skip self-communication
+                    if current_agent.name == next_agent.name:
                         continue
 
-                    if agent.name not in self.agents_and_threads.keys():
-                        self.agents_and_threads[agent.name] = {}
+                    # Add communication flow and thread
+                    thread_key = self._make_thread_key(current_agent, next_agent)
+                    if thread_key not in self.threads:
+                        self.threads[thread_key] = Thread(
+                            sender=current_agent, recipient=next_agent, messages=[]
+                        )
+                        self.communication_flows.append((current_agent, next_agent))
 
-                    if i < len(node) - 1:
-                        other_agent = node[i + 1]
-                        if other_agent.name == agent.name:
-                            continue
-                        if (
-                            other_agent.name
-                            not in self.agents_and_threads[agent.name].keys()
-                        ):
-                            self.agents_and_threads[agent.name][other_agent.name] = {
-                                "agent": agent.name,
-                                "recipient_agent": other_agent.name,
-                            }
-            else:
-                raise Exception("Invalid agency chart.")
+        # Ensure we have a CEO
+        if not self.ceo and self.agents:
+            self.ceo = self.agents[0]
+            self._add_main_recipient(self.ceo)
 
-    def _parse_new_structure(
-        self, entry_points: List[Agent], communication_flows: List[Tuple[Agent, Agent]]
+    def _parse_agency_chart(
+        self, entry_points: list[Agent], communication_flows: list[tuple[Agent, Agent]]
     ):
         """Parse the new agency structure with entry points and communication flows."""
         # Validate entry points
@@ -1109,31 +1113,28 @@ class Agency:
 
         # Store and validate communication flows
         self.communication_flows = []
-        for initiator, recipient in communication_flows:
-            if not isinstance(initiator, Agent) or not isinstance(recipient, Agent):
+        for sender, recipient in communication_flows:
+            if not isinstance(sender, Agent) or not isinstance(recipient, Agent):
                 raise ValueError("Communication flow must be between Agent instances")
 
-            if initiator.name == recipient.name:
-                raise ValueError(
-                    f"Agent {initiator.name} cannot communicate with itself"
-                )
+            if sender.name == recipient.name:
+                raise ValueError(f"Agent {sender.name} cannot communicate with itself")
 
             # Add agents if not already added
-            self._add_agent(initiator)
+            self._add_agent(sender)
             self._add_agent(recipient)
 
             # Store communication flow
-            self.communication_flows.append((initiator, recipient))
+            self.communication_flows.append((sender, recipient))
 
-            # Set up communication thread structure
-            if initiator.name not in self.agents_and_threads:
-                self.agents_and_threads[initiator.name] = {}
-
-            if recipient.name not in self.agents_and_threads[initiator.name]:
-                self.agents_and_threads[initiator.name][recipient.name] = {
-                    "agent": initiator.name,
-                    "recipient_agent": recipient.name,
-                }
+            # Set up communication thread
+            thread_key = self._make_thread_key(sender, recipient)
+            if thread_key not in self.threads:
+                self.threads[thread_key] = Thread(
+                    sender=sender,
+                    recipient=recipient,
+                    messages=[],
+                )
 
     def _add_agent(self, agent):
         """
@@ -1145,18 +1146,26 @@ class Agency:
         Returns:
             int: The index of the added agent within the agency's agents list.
 
-        This method adds an agent to the agency's list of agents. If the agent does not have an ID, it assigns a temporary unique ID. It checks for uniqueness of the agent's name before addition. The method returns the index of the agent in the agency's agents list, which is used for referencing the agent within the agency.
+        This method adds an agent to the agency's list of agents. If the agent does not have an ID,
+        it assigns a temporary unique ID. It checks for uniqueness of the agent's name before addition.
         """
+        if not isinstance(agent, Agent):
+            raise ValueError(f"Expected Agent instance, got {type(agent)}")
+
+        # Assign temp ID if needed
         if not agent.id:
-            # assign temp id
-            agent.id = "temp_id_" + str(uuid.uuid4())
-        if agent.id not in self._get_agent_ids():
-            if agent.name in self._get_agent_names():
-                raise Exception("Agent names must be unique.")
-            self.agents.append(agent)
-            return len(self.agents) - 1
-        else:
-            return self._get_agent_ids().index(agent.id)
+            agent.id = f"temp_id_{str(uuid.uuid4())}"
+
+        # Check if agent already exists
+        for existing_agent in self.agents:
+            if existing_agent.id == agent.id:
+                return self.agents.index(existing_agent)
+            if existing_agent.name == agent.name:
+                raise ValueError(f"Agent name '{agent.name}' is already in use")
+
+        # Add new agent
+        self.agents.append(agent)
+        return len(self.agents) - 1
 
     def _add_main_recipient(self, agent):
         """
@@ -1167,10 +1176,10 @@ class Agency:
 
         This method adds an agent to the agency's list of main recipients. These are agents that can be directly contacted by the user.
         """
-        main_recipient_ids = [agent.id for agent in self.main_recipients]
+        main_recipient_ids = [agent.id for agent in self.entry_points]
 
         if agent.id not in main_recipient_ids:
-            self.main_recipients.append(agent)
+            self.entry_points.append(agent)
 
     def _read_instructions(self, path):
         """
@@ -1189,23 +1198,29 @@ class Agency:
         """
         Creates and assigns 'SendMessage' tools to each agent based on the agency's structure.
 
-        This method iterates through the agents and threads in the agency, creating SendMessage tools for each agent. These tools enable agents to send messages to other agents as defined in the agency's structure. The SendMessage tools are tailored to the specific recipient agents that each agent can communicate with.
+        This method iterates through the agents and threads in the agency, creating SendMessage tools for each agent.
+        These tools enable agents to send messages to other agents as defined in the agency's structure.
+        The SendMessage tools are tailored to the specific recipient agents that each agent can communicate with.
 
-        No input parameters.
-
-        No output parameters; this method modifies the agents' toolset internally.
+        Thread keys are in the format 'sender->recipient' where:
+        - sender can be 'user' or an agent name
+        - recipient is always an agent name
         """
-        for agent_name, threads in self.agents_and_threads.items():
-            if agent_name == "main_thread":
-                continue
-            recipient_names = list(threads.keys())
-            recipient_agents = self._get_agents_by_names(recipient_names)
-            if len(recipient_agents) == 0:
-                continue
-            agent = self._get_agent_by_name(agent_name)
-            agent.add_tool(self._create_send_message_tool(agent, recipient_agents))
+        # Iterate through all agents and create their SendMessage tools
+        for agent in self.agents:
+            # Find all threads where this agent is the sender
+            recipient_names = []
+            for thread_key in self.threads.keys():
+                sender, recipient = self._parse_thread_key(thread_key)
+                if sender == agent.name:
+                    recipient_names.append(recipient)
 
-    def _create_send_message_tool(self, agent: Agent, recipient_agents: List[Agent]):
+            # Get recipient agents and create the SendMessage tool
+            recipient_agents = self._get_agents_by_names(recipient_names)
+            if len(recipient_agents) > 0:
+                agent.add_tool(self._create_send_message_tool(agent, recipient_agents))
+
+    def _create_send_message_tool(self, agent: Agent, recipient_agents: list[Agent]):
         """
         Creates a SendMessage tool to enable an agent to send messages to specified recipient agents.
 
@@ -1240,33 +1255,37 @@ class Agency:
                 return value
 
         SendMessage._caller_agent = agent
-        SendMessage._agents_and_threads = self.agents_and_threads
+        SendMessage._threads = self.threads
 
         return SendMessage
 
-    def _get_agent_by_name(self, agent_name):
-        """
-        Retrieves an agent from the agency based on the agent's name.
+    def _get_agent_by_name(self, name: str) -> Agent:
+        """Get an agent by its name.
 
-        Parameters:
-            agent_name (str): The name of the agent to be retrieved.
+        Args:
+            name: Name of the agent to find
 
         Returns:
-            Agent: The agent object with the specified name.
+            Agent: The found agent instance
+
+        Special cases:
+            - Returns a User instance if name is 'user'
+            - Searches through registered agents otherwise
 
         Raises:
-            Exception: If no agent with the given name is found in the agency.
+            ValueError: If no agent with the given name is found
         """
         # Special case for user
-        if agent_name == "user":
-            return self.user
+        if name == "user":
+            return User()
 
+        # Search through registered agents
         for agent in self.agents:
-            if agent.name == agent_name:
+            if agent.name == name:
                 return agent
-        raise Exception(f"Agent {agent_name} not found.")
+        raise ValueError(f"Agent '{name}' not found")
 
-    def _get_agents_by_names(self, agent_names):
+    def _get_agents_by_names(self, agent_names: list[str]) -> list[Agent]:
         """
         Retrieves a list of agent objects based on their names.
 
@@ -1279,21 +1298,11 @@ class Agency:
         return [self._get_agent_by_name(agent_name) for agent_name in agent_names]
 
     def _get_agent_ids(self):
-        """
-        Retrieves the IDs of all agents currently in the agency.
-
-        Returns:
-            List[str]: A list containing the unique IDs of all agents.
-        """
+        """Get list of all agent IDs in the agency."""
         return [agent.id for agent in self.agents]
 
     def _get_agent_names(self):
-        """
-        Retrieves the names of all agents in the agency.
-
-        Returns:
-            List[str]: A list of names of all agents currently part of the agency.
-        """
+        """Get list of all agent names in the agency."""
         return [agent.name for agent in self.agents]
 
     def _get_class_folder_path(self):
@@ -1312,28 +1321,21 @@ class Agency:
         for agent in self.agents:
             agent.delete()
 
-    @property
-    def _thread_type(self):
-        """Get the thread type based on async mode."""
-        if self.async_mode == "threading":
-            return ThreadAsync
-        return Thread
-
-    def _configure_file_search(self, agent: Agent, file_ids: List[str]):
+    def _configure_file_search(self, agent: Agent, file_ids: list[str]):
         """Configure FileSearch tool for an agent with given file IDs."""
         if not file_ids:
             return
 
-        if FileSearch not in agent.tools:
+        if FileSearchTool not in agent.tools:
             print("Adding FileSearch tool for uploaded files...")
-            agent.tools.append(FileSearch)
+            agent.tools.append(FileSearchTool)
 
         if not agent.file_search:
-            agent.file_search = FileSearchConfig()
+            agent.file_search = FileSearchToolParam()
         agent.file_search.file_ids = file_ids
 
     def check_and_add_tools_in_attachments(
-        self, file_ids: List[str], recipient_agent: Agent
+        self, file_ids: list[str], recipient_agent: Agent
     ) -> None:
         """Check and add tools based on file types.
 
@@ -1346,6 +1348,6 @@ class Agency:
 
         # Add FileSearch tool if needed
         if any(file_id.startswith("file-") for file_id in file_ids):
-            if not any(isinstance(t, FileSearch) for t in recipient_agent.tools):
-                recipient_agent.tools.append(FileSearch)
+            if not any(isinstance(t, FileSearchTool) for t in recipient_agent.tools):
+                recipient_agent.tools.append(FileSearchTool)
                 print("Added FileSearch tool to recipient agent to analyze the file.")

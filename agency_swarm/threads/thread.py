@@ -4,9 +4,7 @@ import inspect
 import json
 import logging
 import uuid
-from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, Type, Union
+from typing import TYPE_CHECKING, Any, AsyncIterator, Type
 
 from openai import AsyncOpenAI
 from openai.types.responses import Response
@@ -20,10 +18,10 @@ from agency_swarm.util.oai import get_openai_client
 from agency_swarm.util.streaming.agency_event_handler import AgencyEventHandler
 from agency_swarm.util.tracking.tracking_manager import TrackingManager
 
-from .thread_async import ThreadAsync
-
 if TYPE_CHECKING:
     from agency_swarm.agents import Agent
+
+    from .thread_async import ThreadAsync
 
 logger = logging.getLogger(__name__)
 
@@ -34,47 +32,71 @@ class ToolNotFoundError(Exception):
     pass
 
 
+class ToolExecutionError(Exception):
+    """Exception raised when a tool execution fails with additional context."""
+
+    def __init__(
+        self, message: str, tool_name: str, original_error: Exception, **context
+    ):
+        self.tool_name = tool_name
+        self.original_error = original_error
+        self.context = context
+        super().__init__(
+            f"{message} - Tool: {tool_name} - Original error: {str(original_error)}"
+        )
+
+
 class Thread:
     """
-    A class representing a conversation thread between agents.
+    A Thread represents a bidirectional communication channel between a sender and recipient.
+    The recipient MUST always be an Agent, while the sender can be either a User or an Agent.
+
+    Valid flows:
+    - User -> Agent (sender=User, recipient=Agent)
+    - Agent -> Agent (sender=Agent, recipient=Agent)
+
+    Invalid flow:
+    - Agent -> User (recipient can never be User)
+
+    The Thread maintains complete conversation history locally for full state control.
+    Every message sent through get_response() gets a response from the recipient Agent.
+
+    This class handles both synchronous and parallel tool execution through threading.
+    Note that while tools themselves are synchronous, they can be executed in parallel
+    using thread pools when configured with ToolConfig.async_mode = "threading".
+
+    This is different from ThreadAsync which handles non-blocking agent communication,
+    not asynchronous tool execution.
     """
 
     def __init__(
         self,
-        agent: Union[Agent, User],
-        recipient_agent: Agent,
-        previous_response_id: str | None = None,
-        messages: list[dict] | None = None,
-        on_response: Callable[[AgentResponse], None] | None = None,
-        on_tool_call: Callable[[AgentResponse], None] | None = None,
-        on_error: Callable[[AgentResponse], None] | None = None,
+        sender: Agent | User,
+        recipient: Agent,
+        messages: list[dict[str, Any]] | None = None,
     ):
-        """Initialize a new thread.
+        """
+        Initialize a Thread instance.
 
         Args:
-            agent: The sending agent or user
-            recipient_agent: The receiving agent
-            previous_response_id: Optional ID of previous response for chaining
-            messages: Optional list of previous messages in the conversation
-            on_response: Callback for text responses
-            on_tool_call: Callback for tool calls
-            on_error: Callback for errors
+            sender: The initiator of the conversation (can be User or Agent)
+            recipient: The Agent that will receive and respond to messages
+            messages: Initial message history for the thread
+
+        Raises:
+            TypeError: If recipient is not an Agent
         """
-        self.id = str(uuid.uuid4())
+        if not isinstance(recipient, Agent):
+            raise TypeError("Thread recipient must be an Agent")
+
+        self.sender = sender
+        self.recipient = recipient
         self.messages = messages or []
+        self.id = str(uuid.uuid4())
         self._client = None
         self.shared_state = None
         self.tracking_manager = TrackingManager()
-
-        self.agent = agent
-        self.recipient_agent = recipient_agent
-        self.previous_response_id = previous_response_id
-        self.on_response = on_response
-        self.on_tool_call = on_tool_call
-        self.on_error = on_error
-
-        # Track number of calls between agent pairs
-        self._agent_call_counts = defaultdict(int)
+        self._agent_call_counts = {}
 
     @property
     def client(self) -> AsyncOpenAI:
@@ -83,32 +105,45 @@ class Thread:
             self._client = get_openai_client()
         return self._client
 
-    def _get_thread_key(self) -> str:
-        """Get unique key for current agent pair."""
-        return f"{self.agent.name}->{self.recipient_agent.name}"
-
     def _prepare_tools(self) -> list[dict]:
-        """Convert agent tools to OpenAI format."""
-        if not self.recipient_agent.tools:
+        """Convert agent tools to OpenAI format for AsyncResponses API."""
+        if not self.recipient.tools:
             return []
 
         tools = []
-        for tool in self.recipient_agent.tools:
-            tool_dict = {
-                "type": "function",
-                "name": tool.__name__,
-                "description": tool.__doc__ or "",
-                "parameters": tool.model_json_schema(),
-            }
-            tools.append(tool_dict)
+        for tool in self.recipient.tools:
+            schema = tool.openai_schema
+            tools.append(schema)
         return tools
 
+    def _format_message(
+        self, message: str, message_files: list[str] | None = None
+    ) -> list[dict]:
+        """Format a message into OpenAI's expected message format for AsyncResponses API.
+
+        Args:
+            message: String message to format
+            message_files: Optional list of file IDs to attach
+
+        Returns:
+            List of properly formatted message dicts for AsyncResponses API
+        """
+        if not isinstance(message, str):
+            raise ValueError("Message must be a string")
+
+        content = [{"type": "input_text", "text": message}]
+        if message_files:
+            for file_id in message_files:
+                content.append({"type": "input_file", "file_id": file_id})
+
+        return [{"role": "user", "content": content}]
+
     async def _prepare_input(
-        self, message: str | list[dict] | None, message_files: list[str] | None = None
+        self, message: str, message_files: list[str] | None = None
     ) -> list[dict]:
         """Prepare input messages including conversation history.
 
-        Formats new messages and combines them with existing conversation history.
+        Formats new message and combines it with existing conversation history.
 
         Args:
             message: New message to add to history
@@ -116,104 +151,99 @@ class Thread:
 
         Returns:
             List of messages including history
-
-        Raises:
-            ValueError: If message format is invalid
         """
         # Initialize messages list if None
         if self.messages is None:
             self.messages = []
 
-        # Return existing messages if no new message
-        if not message and not message_files:
-            return self.messages.copy()
+        # Format new message consistently
+        new_messages = self._format_message(message, message_files)
 
-        # Convert string message to list format
-        if isinstance(message, str):
-            content = [{"type": "input_text", "text": message}]
-            if message_files:
-                for file_id in message_files:
-                    content.append({"type": "input_file", "file_id": file_id})
-            new_messages = [{"role": "user", "content": content}]
-        elif isinstance(message, list):
-            # Validate message format
-            for msg in message:
-                if (
-                    not isinstance(msg, dict)
-                    or "role" not in msg
-                    or "content" not in msg
-                ):
-                    raise ValueError(
-                        "Each message must be a dict with 'role' and 'content' keys"
-                    )
-
-                # Convert content to proper format if needed
-                if isinstance(msg["content"], str):
-                    msg["content"] = [{"type": "input_text", "text": msg["content"]}]
-                elif isinstance(msg["content"], list):
-                    # Already in proper format
-                    pass
-                else:
-                    raise ValueError(
-                        "Message content must be a string or list of content items"
-                    )
-            new_messages = message
-        else:
-            raise ValueError("Message must be a string or list of dicts")
-
-        # Add new messages to history
+        # Add new message to history
         self.messages.extend(new_messages)
 
         # Return copy to avoid modifying history
         return self.messages.copy()
 
+    def _extract_text_content(self, response: Response) -> str:
+        """Extract text content from a response in a consistent way.
+
+        Args:
+            response: The OpenAI response object
+
+        Returns:
+            Text content from the response, or empty string if none found
+        """
+        content = ""
+        for output_item in response.output:
+            if output_item.type == "message" and output_item.content:
+                content = output_item.content[0].text
+                break
+        return content
+
+    async def _prepare_conversation_input(
+        self,
+        message: str,
+        message_files: list[str] | None = None,
+    ) -> list[dict]:
+        """Prepare conversation input for the API call.
+
+        Always sends the full conversation history to maintain context properly.
+        State is maintained through the complete message history.
+
+        Args:
+            message: The new message to send
+            message_files: Optional list of file IDs to attach
+
+        Returns:
+            List of message dictionaries formatted for the API
+        """
+        # Format the new message
+        new_message = self._format_message(message, message_files)
+
+        # Initialize messages list if needed
+        self.messages = self.messages or []
+
+        # Add new message to history
+        self.messages.extend(new_message)
+
+        # Return full conversation history
+        return self.messages.copy()
+
     async def get_response(
         self,
-        message: str | list[dict] | None,
+        message: str,
         message_files: list[str] | None = None,
         recipient_agent: Agent | None = None,
         additional_instructions: str | None = None,
         tool_choice: ToolChoice | None = None,
         parent_run_id: str | None = None,
     ) -> AgentResponse:
-        """Get a response from the recipient agent.
+        """Get a response from the recipient Agent.
+
+        Every message sent through this method gets a response from the recipient Agent.
+        The recipient is always an Agent (never a User).
 
         Args:
             message: The message to send
-            message_files: Optional list of file IDs
-            recipient_agent: Optional specific agent to send to
+            message_files: Optional list of file IDs to attach
+            recipient_agent: Optional override for the recipient Agent
             additional_instructions: Optional additional instructions
-            tool_choice: Either "auto", "none", "required" or a dict specifying a tool
+            tool_choice: Optional tool choice
             parent_run_id: Optional parent run ID for tracking
 
         Returns:
-            AgentResponse object containing the response
+            AgentResponse containing the Agent's response
         """
         if not recipient_agent:
-            recipient_agent = self.recipient_agent
+            recipient_agent = self.recipient
 
         # Set correct sender/receiver names based on message flow
-        sender_name = "user" if isinstance(self.agent, User) else self.agent.name
-
-        # The receiver should be 'user' if:
-        # 1. The message originated from a user, OR
-        # 2. The message is being sent directly to an agent from the user's perspective
-        receiver_name = (
-            "user"
-            if (
-                isinstance(self.agent, User)
-                or (recipient_agent and isinstance(self.agent, User))
-            )
-            else self.agent.name
-        )
+        sender_name = "user" if isinstance(self.sender, User) else self.sender.name
+        receiver_name = recipient_agent.name
 
         # Debug info with clear message flow
-        print(
-            f"RESPONSE:[ {sender_name} -> {recipient_agent.name} ] (receiver: {receiver_name})"
-        )
-
-        # Prepare input with history
-        input_messages = await self._prepare_input(message, message_files)
+        logger.debug(f"RESPONSE:[ {sender_name} -> {recipient_agent.name} ]")
 
         # Track start of interaction
         run_id = self.tracking_manager.start_run(
@@ -227,37 +257,38 @@ class Thread:
         )
 
         try:
-            # Create response with explicit instructions about maintaining context
-            response = await self.client.responses.create(
+            # Prepare input with conversation history
+            messages = await self._prepare_conversation_input(message, message_files)
+
+            # Create response with complete history
+            response: Response = await self.client.responses.create(
                 model=recipient_agent.model,
-                input=input_messages,
-                instructions=(additional_instructions or recipient_agent.instructions)
-                + "\nMaintain and reference the conversation history in your responses.",
-                tools=self._prepare_tools(),
-                temperature=recipient_agent.temperature,
-                previous_response_id=self.previous_response_id,
-                tool_choice=tool_choice,
+                input=messages,  # Use full history
+                instructions=additional_instructions or recipient_agent.instructions,
+                tools=self._prepare_tools() if recipient_agent.tools else None,
+                temperature=recipient_agent.temperature
+                if recipient_agent.temperature is not None
+                else 0.7,
+                tool_choice=tool_choice if tool_choice is not None else "auto",
                 stream=False,
             )
 
-            # Update previous_response_id
-            self.previous_response_id = response.id
-
-            # Check for tool calls in output
+            # Process response output
             tool_calls = []
+            assistant_message = None
+
             for output_item in response.output:
                 if output_item.type == "function_call":
-                    tool_calls.append(output_item)
-                elif output_item.type == "message":
-                    # Add assistant's response to message history
-                    self.messages.append(
+                    tool_calls.append(
                         {
-                            "role": "assistant",
-                            "content": output_item.content[0].text
-                            if output_item.content
-                            else "",
+                            "type": "function_call",
+                            "id": output_item.id,
+                            "name": output_item.name,
+                            "arguments": output_item.arguments,
                         }
                     )
+                elif output_item.type == "message" and output_item.content:
+                    assistant_message = output_item.content[0].text
 
             # Handle tool calls if present
             if tool_calls:
@@ -269,27 +300,52 @@ class Thread:
                     parent_run_id=parent_run_id,
                 )
 
+                # Add function calls to history
+                self.messages.extend(
+                    [
+                        *[{"type": "function_call", **call} for call in tool_calls],
+                        *[
+                            {
+                                "type": "function_call_output",
+                                "call_id": output["call_id"],
+                                "output": output["content"][0]["text"]
+                                if isinstance(output["content"], list)
+                                else output["content"],
+                            }
+                            for output in tool_outputs
+                            if output["role"] == "tool"
+                        ],
+                    ]
+                )
+
                 # Create agent response with tool outputs
                 agent_response = AgentResponse(
                     type="tool_call",
-                    sender_name=recipient_agent.name,
+                    sender_name=sender_name,
                     receiver_name=receiver_name,
                     content=tool_outputs,
                     raw_response=response,
                 )
             else:
                 # Create text response
-                content = response.output[0].content[0].text if response.output else ""
                 agent_response = AgentResponse(
                     type="text",
-                    sender_name=recipient_agent.name,
+                    sender_name=sender_name,
                     receiver_name=receiver_name,
-                    content=content,
+                    content=assistant_message,
                     raw_response=response,
                 )
 
+                # Add assistant's message to history
+                self.messages.append(
+                    {
+                        "type": "message",
+                        "content": [{"type": "text", "text": assistant_message}],
+                    }
+                )
+
             # Track successful completion
-            self.tracking_manager.end_run(agent_response, run_id)
+            self.tracking_manager.end_run(agent_response, run_id, parent_run_id)
 
             return agent_response
 
@@ -300,7 +356,7 @@ class Thread:
 
     async def get_response_stream(
         self,
-        message: str | list[dict] | None,
+        message: str,
         event_handler: Type[AgencyEventHandler],
         message_files: list[str] | None = None,
         recipient_agent: Agent | None = None,
@@ -308,21 +364,47 @@ class Thread:
         tool_choice: ToolChoice | None = None,
         parent_run_id: str | None = None,
     ) -> AsyncIterator[AgentResponse]:
-        """Streaming version of get_response that yields AgentResponse events."""
+        """Streaming version of get_response that yields AgentResponse events.
+
+        Every message sent through this method gets a streaming response from the recipient Agent.
+        The recipient is always an Agent (never a User).
+
+        Args:
+            message: The message to send to the Agent
+            event_handler: Handler class for streaming events
+            message_files: Optional list of file IDs to attach
+            recipient_agent: Optional override for the recipient Agent
+            additional_instructions: Optional additional instructions
+            tool_choice: Optional tool choice for specifying which tools to use
+            parent_run_id: Optional parent run ID for tracking
+
+        Yields:
+            AgentResponse events for streaming responses
+
+        Note:
+            Full conversation history is maintained locally and sent with each request
+            to ensure proper state management and context preservation.
+
+        Raises:
+            TypeError: If message is not a string
+        """
+        if not isinstance(message, str):
+            raise TypeError("Message must be a string")
+
         if not recipient_agent:
-            recipient_agent = self.recipient_agent
+            recipient_agent = self.recipient
 
         # Debug info
-        sender_name = "user" if isinstance(self.agent, User) else self.agent.name
-        print(f"RESPONSE_STREAM:[ {sender_name} -> {recipient_agent.name} ]")
+        sender_name = "user" if isinstance(self.sender, User) else self.sender.name
+        logger.debug(f"RESPONSE_STREAM:[ {sender_name} -> {recipient_agent.name} ]")
 
-        # Prepare input
-        input_messages = await self._prepare_input(message, message_files)
+        # Prepare input messages using centralized helper
+        input_messages = await self._prepare_conversation_input(message, message_files)
 
         # Track start of interaction
         run_id = self.tracking_manager.start_run(
             message=message,
-            sender_agent=self.agent.name,
+            sender_agent=self.sender.name,
             recipient_agent=recipient_agent.name,
             run_id=None,
             parent_run_id=parent_run_id,
@@ -338,33 +420,28 @@ class Thread:
                     input=input_messages,
                     instructions=additional_instructions
                     or recipient_agent.instructions,
-                    tools=self._prepare_tools(),
-                    temperature=recipient_agent.temperature,
-                    previous_response_id=self.previous_response_id,
+                    tools=self._prepare_tools() if recipient_agent.tools else None,
+                    temperature=recipient_agent.temperature
+                    if recipient_agent.temperature is not None
+                    else 0.0,
                     tool_choice=tool_choice or "auto",
                     stream=True,
                 )
 
-                current_response_id = None
                 tool_calls_in_progress = []
-                current_text = ""
 
                 async for chunk in stream:
                     # Handle response creation
                     if chunk.type == "response.created":
-                        if hasattr(chunk, "id"):
-                            current_response_id = chunk.id
-                            self.previous_response_id = chunk.id
                         continue
 
                     # Handle text deltas
                     if chunk.type == "text.delta":
-                        current_text += chunk.text
                         event_handler.on_text_delta(chunk.text, "")
                         response = AgentResponse(
                             type="text",
-                            sender_name=recipient_agent.name,
-                            receiver_name=self.agent.name,
+                            sender_name=sender_name,
+                            receiver_name=recipient_agent.name,
                             content=chunk.text,
                             raw_response=chunk,
                         )
@@ -378,8 +455,8 @@ class Thread:
                         tool_calls_in_progress.append(chunk)
                         response = AgentResponse.from_tool_call(
                             chunk,
-                            sender_name=recipient_agent.name,
-                            receiver_name=self.agent.name,
+                            sender_name=sender_name,
+                            receiver_name=recipient_agent.name,
                         )
                         if self.on_tool_call:
                             self.on_tool_call(response)
@@ -394,18 +471,11 @@ class Thread:
                             )
                             event_handler.on_tool_call_completed(chunk, result)
 
-                            # Add tool call and result to input messages
-                            input_messages.append(
-                                {
-                                    "role": "assistant",
-                                    "content": None,
-                                    "tool_calls": [chunk],
-                                }
-                            )
-                            input_messages.append(
+                            # Add tool response to history
+                            self.messages.append(
                                 {
                                     "role": "tool",
-                                    "content": str(result),
+                                    "content": result,
                                     "tool_call_id": chunk.id,
                                 }
                             )
@@ -414,8 +484,8 @@ class Thread:
                             event_handler.on_tool_call_error(chunk, str(e))
                             error_response = AgentResponse.from_error(
                                 e,
-                                sender_name=recipient_agent.name,
-                                receiver_name=self.agent.name,
+                                sender_name=sender_name,
+                                receiver_name=recipient_agent.name,
                             )
                             if self.on_error:
                                 self.on_error(error_response)
@@ -437,7 +507,7 @@ class Thread:
 
         except Exception as e:
             error_response = AgentResponse.from_error(
-                e, sender_name=recipient_agent.name, receiver_name=self.agent.name
+                e, sender_name=sender_name, receiver_name=recipient_agent.name
             )
             self.tracking_manager.track_chain_error(
                 error_response, run_id, parent_run_id
@@ -452,18 +522,36 @@ class Thread:
         recipient_agent: Agent,
         event_handler: Type[AgencyEventHandler] | None,
     ) -> str:
-        """Execute a tool and return its result."""
+        """Execute a tool and return its result.
+
+        This method handles three types of tool execution:
+        1. Async execution via run_async() - for tools configured with async_mode
+        2. Coroutine execution - for tools that return coroutines from run()
+        3. Synchronous execution - for regular tools
+
+        The execution order is:
+        1. Try run_async() if tool is configured for async
+        2. Try run() and await if it returns a coroutine
+        3. Fall back to synchronous run()
+        """
         tool = next(
             (t for t in recipient_agent.tools if t.__name__ == tool_call.function.name),
             None,
         )
 
         if not tool:
-            raise ValueError(f"Tool {tool_call.function.name} not found")
+            error_msg = f"Tool {tool_call.function.name} not found"
+            logger.error(error_msg)
+            raise ToolNotFoundError(error_msg)
 
         try:
             # Parse arguments
             args = json.loads(tool_call.function.arguments)
+
+            # Log tool execution with context
+            logger.debug(
+                f"Executing tool {tool_call.function.name} with args: {json.dumps(args, indent=2)}"
+            )
 
             # Create tool instance
             tool_instance = tool(**args)
@@ -472,12 +560,21 @@ class Thread:
             if hasattr(recipient_agent, "shared_state"):
                 tool_instance._shared_state = recipient_agent.shared_state
 
-            # Execute tool
-            result = tool_instance.run()
+            # Try to execute the tool in the appropriate mode
+            if (
+                hasattr(tool, "ToolConfig")
+                and hasattr(tool.ToolConfig, "async_mode")
+                and tool.ToolConfig.async_mode
+            ):
+                # Use run_async for tools configured for async execution
+                result = await tool_instance.run_async()
+            else:
+                # Try regular run() first
+                result = tool_instance.run()
 
-            # Handle async results
-            if inspect.iscoroutine(result):
-                result = await result
+                # If run() returned a coroutine, await it
+                if inspect.iscoroutine(result):
+                    result = await result
 
             # Convert result to string
             if isinstance(result, (dict, list)):
@@ -485,11 +582,31 @@ class Thread:
             else:
                 result = str(result)
 
+            logger.debug(
+                f"Tool {tool_call.function.name} executed successfully with result type: {type(result)}"
+            )
             return result
 
         except Exception as e:
-            print(f"Error executing tool {tool_call.function.name}: {str(e)}")
-            raise
+            error_context = {
+                "tool_arguments": tool_call.function.arguments,
+                "recipient_agent": recipient_agent.name,
+                "event_handler_type": type(event_handler).__name__
+                if event_handler
+                else None,
+            }
+
+            logger.error(
+                f"Error executing tool {tool_call.function.name}: {str(e)}\n"
+                f"Context: {json.dumps(error_context, indent=2)}"
+            )
+
+            raise ToolExecutionError(
+                message="Failed to execute tool",
+                tool_name=tool_call.function.name,
+                original_error=e,
+                **error_context,
+            )
 
     def _check_agent_calls(self, caller_name: str, target_name: str) -> None:
         """Check if maximum number of calls between agents has been exceeded.
@@ -515,7 +632,7 @@ class Thread:
 
     async def _handle_tool_calls(
         self,
-        tool_calls: list[Any],
+        tool_calls: list[dict],
         response: Response,
         recipient_agent: Agent,
         event_handler: Type[AgencyEventHandler] | None,
@@ -530,90 +647,52 @@ class Thread:
         )
 
         # If this is an async thread, update tool call tracking
-        if isinstance(self, ThreadAsync):
+        if self.__class__.__name__ == "ThreadAsync":
             self._tool_calls_in_progress = tool_calls.copy()
             self._tool_results.clear()
 
-        # Split into sync and async tool calls
-        sync_tool_calls, async_tool_calls = self._get_sync_async_tool_calls(
+        # Split into synchronous and parallel execution groups
+        sync_tool_calls, parallel_tool_calls = self._get_sync_async_tool_calls(
             tool_calls, recipient_agent
         )
 
-        # Handle async tool calls if any
-        if async_tool_calls and self.async_mode == "tools_threading":
-            with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-                futures = {}
-                for tool_call in async_tool_calls:
-                    futures[
-                        executor.submit(
-                            self._execute_tool,
-                            tool_call,
-                            recipient_agent,
-                            event_handler,
-                        )
-                    ] = tool_call
-
-                for future in as_completed(futures):
-                    tool_call = futures[future]
-                    try:
-                        result = await future.result()
-                        tool_outputs.append(
-                            {
-                                "role": "tool",
-                                "content": str(result),
-                                "tool_call_id": tool_call.id,
-                            }
-                        )
-                        if isinstance(self, ThreadAsync):
-                            self._tool_results[tool_call.id] = result
-                            self._tool_calls_in_progress.remove(tool_call)
-                        self.tracking_manager.track_tool_end(
-                            output=result,
-                            tool_call=tool_call,
-                            parent_run_id=response.id,
-                            is_retriever=tool_call.type == "file_search",
-                        )
-                    except Exception as e:
-                        if isinstance(self, ThreadAsync):
-                            self._tool_results[tool_call.id] = str(e)
-                            self._tool_calls_in_progress.remove(tool_call)
-                        self.tracking_manager.track_tool_error(
-                            error=e,
-                            tool_call=tool_call,
-                            parent_run_id=response.id,
-                            is_retriever=tool_call.type == "file_search",
-                        )
-                        tool_outputs.append(
-                            {
-                                "role": "tool",
-                                "content": f"Error: {str(e)}",
-                                "tool_call_id": tool_call.id,
-                            }
-                        )
-
-        # Handle sync tool calls
+        # Handle synchronous tool calls
         sync_tool_calls += (
-            async_tool_calls if not self.async_mode == "tools_threading" else []
+            parallel_tool_calls
+            if getattr(self, "async_mode", "none") != "tools_threading"
+            else []
         )
+
         for tool_call in sync_tool_calls:
             try:
-                if tool_call.function.name.startswith("SendMessage"):
+                tool_name = tool_call.get("function", {}).get("name")
+
+                if not tool_name:
+                    error_message = f"Invalid tool call format: {tool_call}"
+                    logger.error(error_message)
+                    raise ValueError(error_message)
+
+                if tool_name.startswith("SendMessage"):
                     # Handle SendMessage tool - create new thread for recipient
-                    args = json.loads(tool_call.function.arguments)
+                    args = json.loads(tool_call["function"]["arguments"])
                     target_agent = self._get_recipient_agent(args["recipient"])
 
                     # Check agent call limits
                     try:
                         self._check_agent_calls(recipient_agent.name, target_agent.name)
                     except RuntimeError as e:
-                        if isinstance(self, ThreadAsync):
-                            self._tool_results[tool_call.id] = str(e)
-                            self._tool_calls_in_progress.remove(tool_call)
+                        if self.__class__.__name__ == "ThreadAsync":
+                            self._tool_results[tool_call["id"]] = str(e)
+                            if tool_call in self._tool_calls_in_progress:
+                                self._tool_calls_in_progress.remove(tool_call)
                         tool_outputs.append(
                             {
                                 "role": "tool",
-                                "content": f"Error: {str(e)}",
-                                "tool_call_id": tool_call.id,
+                                "type": "function_call_output",
+                                "call_id": tool_call["id"],
+                                "content": [
+                                    {"type": "output_text", "text": f"Error: {str(e)}"}
+                                ],
                             }
                         )
                         continue
@@ -623,21 +702,27 @@ class Thread:
                         new_thread = Thread(
                             recipient_agent,
                             target_agent,
-                            threads_callbacks=self.threads_callbacks,
+                            # Forward async settings for consistency
+                            async_mode=getattr(self, "async_mode", "none"),
+                            max_workers=getattr(self, "max_workers", 5),
                         )
                         result = await new_thread.get_response(
-                            message=args["message"], parent_run_id=tool_call.id
+                            message=args["message"], parent_run_id=tool_call["id"]
                         )
 
-                        if isinstance(self, ThreadAsync):
-                            self._tool_results[tool_call.id] = result.content
-                            self._tool_calls_in_progress.remove(tool_call)
+                        if self.__class__.__name__ == "ThreadAsync":
+                            self._tool_results[tool_call["id"]] = result.content
+                            if tool_call in self._tool_calls_in_progress:
+                                self._tool_calls_in_progress.remove(tool_call)
 
                         tool_outputs.append(
                             {
                                 "role": "tool",
-                                "content": result.content,
-                                "tool_call_id": tool_call.id,
+                                "type": "function_call_output",
+                                "call_id": tool_call["id"],
+                                "content": [
+                                    {"type": "output_text", "text": result.content}
+                                ],
                             }
                         )
                     finally:
@@ -652,15 +737,17 @@ class Thread:
                         event_handler=event_handler,
                     )
 
-                    if isinstance(self, ThreadAsync):
-                        self._tool_results[tool_call.id] = result
-                        self._tool_calls_in_progress.remove(tool_call)
+                    if self.__class__.__name__ == "ThreadAsync":
+                        self._tool_results[tool_call["id"]] = result
+                        if tool_call in self._tool_calls_in_progress:
+                            self._tool_calls_in_progress.remove(tool_call)
 
                     tool_outputs.append(
                         {
                             "role": "tool",
-                            "content": str(result),
-                            "tool_call_id": tool_call.id,
+                            "type": "function_call_output",
+                            "call_id": tool_call["id"],
+                            "content": [{"type": "output_text", "text": str(result)}],
                         }
                     )
 
@@ -669,19 +756,30 @@ class Thread:
                     output=result,
                     tool_call=tool_call,
                     parent_run_id=response.id,
-                    is_retriever=tool_call.type == "file_search",
                 )
 
             except Exception as e:
                 # Track tool error
-                if isinstance(self, ThreadAsync):
-                    self._tool_results[tool_call.id] = str(e)
-                    self._tool_calls_in_progress.remove(tool_call)
+                if self.__class__.__name__ == "ThreadAsync":
+                    self._tool_results[tool_call["id"]] = str(e)
+                    if tool_call in self._tool_calls_in_progress:
+                        self._tool_calls_in_progress.remove(tool_call)
+
+                tool_outputs.append(
+                    {
+                        "role": "tool",
+                        "type": "function_call_output",
+                        "call_id": tool_call["id"],
+                        "content": [
+                            {"type": "output_text", "text": f"Error: {str(e)}"}
+                        ],
+                    }
+                )
+
                 self.tracking_manager.track_tool_error(
                     error=e,
                     tool_call=tool_call,
                     parent_run_id=response.id,
-                    is_retriever=tool_call.type == "file_search",
                 )
                 tool_outputs.append(
                     {
@@ -691,6 +789,64 @@ class Thread:
                     }
                 )
 
+        # Handle parallel tool execution if any tools are configured for it
+        if (
+            parallel_tool_calls
+            and getattr(self, "async_mode", "none") == "tools_threading"
+        ):
+            import asyncio
+
+            # Execute all parallel tools concurrently using their run_async methods
+            parallel_results = await asyncio.gather(
+                *[
+                    self._execute_tool(tool_call, recipient_agent, event_handler)
+                    for tool_call in parallel_tool_calls
+                ],
+                return_exceptions=False,
+            )
+
+            # Process results
+            for tool_call, result in zip(parallel_tool_calls, parallel_results):
+                try:
+                    tool_output = {
+                        "role": "tool",
+                        "content": str(result),
+                        "tool_call_id": tool_call.id,
+                    }
+
+                    if isinstance(self, ThreadAsync):
+                        self._tool_results[tool_call.id] = result
+                        if tool_call in self._tool_calls_in_progress:
+                            self._tool_calls_in_progress.remove(tool_call)
+
+                    self.tracking_manager.track_tool_end(
+                        output=result,
+                        tool_call=tool_call,
+                        parent_run_id=response.id,
+                    )
+
+                    tool_outputs.append(tool_output)
+                except Exception as e:
+                    # Handle errors
+                    if isinstance(self, ThreadAsync):
+                        self._tool_results[tool_call.id] = str(e)
+                        if tool_call in self._tool_calls_in_progress:
+                            self._tool_calls_in_progress.remove(tool_call)
+
+                    self.tracking_manager.track_tool_error(
+                        error=e,
+                        tool_call=tool_call,
+                        parent_run_id=response.id,
+                    )
+
+                    tool_outputs.append(
+                        {
+                            "role": "tool",
+                            "content": f"Error: {str(e)}",
+                            "tool_call_id": tool_call.id,
+                        }
+                    )
+
         # Add assistant message with tool calls
         tool_outputs.insert(
             0, {"role": "assistant", "content": None, "tool_calls": tool_calls}
@@ -699,93 +855,78 @@ class Thread:
         return tool_outputs
 
     def _get_sync_async_tool_calls(
-        self, tool_calls: list[Any], recipient_agent: Agent
-    ) -> tuple[list[Any], list[Any]]:
-        """Split tool calls into sync and async based on tool configuration."""
-        async_tool_calls = []
-        sync_tool_calls = []
+        self, tool_calls: list[dict], recipient_agent: Agent
+    ) -> tuple[list[dict], list[dict]]:
+        """Split tool calls into synchronous and parallel (threaded) execution groups.
+
+        Tools can be executed in two ways:
+        1. Synchronously - one after another in the main thread
+        2. In parallel - using a thread pool when marked with ToolConfig.async_mode = "threading"
+
+        Note: The tools themselves are synchronous Python functions, but can be run in separate
+        threads for concurrent execution when configured for parallel execution.
+
+        Args:
+            tool_calls: List of tool calls to process
+            recipient_agent: Agent whose tools are being called
+
+        Returns:
+            Tuple of (sync_tool_calls, parallel_tool_calls)
+
+        Raises:
+            ValueError: If a tool is not found in the agent's tools
+        """
+        parallel_tool_calls: list[dict] = []
+        sync_tool_calls: list[dict] = []
 
         for tool_call in tool_calls:
-            if tool_call.function.name.startswith("SendMessage"):
+            # Handle both object and dictionary access
+            tool_name = tool_call.get("function", {}).get("name")
+
+            if not tool_name:
+                error_message = f"Invalid tool call format: {tool_call}"
+                logger.error(error_message)
+                raise ValueError(error_message)
+
+            if tool_name.startswith("SendMessage"):
                 sync_tool_calls.append(tool_call)
                 continue
 
             tool = next(
-                (
-                    func
-                    for func in recipient_agent.tools
-                    if func.__name__ == tool_call.function.name
-                ),
+                (func for func in recipient_agent.tools if func.__name__ == tool_name),
                 None,
             )
 
             if tool is None:
-                error_message = f"Tool {tool_call.function.name} not found in agent {recipient_agent.name}."
+                error_message = (
+                    f"Tool {tool_name} not found in agent {recipient_agent.name}."
+                )
                 logger.error(error_message)
                 raise ValueError(error_message)
 
+            # Check if tool is configured for parallel execution
             if (
                 hasattr(tool, "ToolConfig")
                 and hasattr(tool.ToolConfig, "async_mode")
                 and tool.ToolConfig.async_mode
             ) or self.async_mode == "tools_threading":
-                async_tool_calls.append(tool_call)
+                parallel_tool_calls.append(tool_call)
             else:
                 sync_tool_calls.append(tool_call)
 
-        return sync_tool_calls, async_tool_calls
+        return sync_tool_calls, parallel_tool_calls
 
     def _get_recipient_agent(self, agent_name: str) -> Agent:
         """Get the recipient agent by name."""
-        if agent_name == self.recipient_agent.name:
-            return self.recipient_agent
+        if agent_name == self.recipient.name:
+            return self.recipient
 
-        if hasattr(self.recipient_agent, "agency"):
-            agent = self.recipient_agent.agency._get_agent_by_name(agent_name)
+        if hasattr(self.recipient, "agency"):
+            agent = self.recipient.agency._get_agent_by_name(agent_name)
             if agent:
                 return agent
 
         raise ValueError(f"Agent {agent_name} not found")
-
-    async def _validate_response(
-        self,
-        recipient_agent: Agent,
-        response: Response,
-        validation_attempts: int = 0,
-        additional_instructions: str | None = None,
-        event_handler: Type[AgencyEventHandler] | None = None,
-        tool_choice: ToolChoice | None = None,
-    ) -> Union[Response, None]:
-        """Validate response using agent's validator if present."""
-        if not recipient_agent.response_validator:
-            return None
-
-        try:
-            recipient_agent.response_validator(message=response.output[0].text.value)
-            return None
-        except Exception as e:
-            if validation_attempts >= recipient_agent.validation_attempts:
-                return None
-
-            # Create validation message
-            content = str(e)
-            try:
-                evaluated_content = eval(content)
-                if isinstance(evaluated_content, list):
-                    content = evaluated_content
-            except:
-                pass
-
-            # Get new response with validation feedback
-            return await self.client.responses.create(
-                instructions=additional_instructions or recipient_agent.instructions,
-                model=recipient_agent.model,
-                input=[{"role": "user", "content": content}],
-                tools=self._prepare_tools(),
-                temperature=recipient_agent.temperature,
-                previous_response_id=self.previous_response_id,
-                tool_choice=tool_choice or "auto",
-            )
 
     async def _upload_file(self, file_path: str) -> str:
         """Upload a file to OpenAI and return its ID.

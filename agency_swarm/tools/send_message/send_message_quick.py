@@ -12,4 +12,4 @@ class SendMessageQuick(SendMessageBase):
     )
 
     def run(self):
-        return self._get_completion(message=self.message)
+        return self._get_response(message=self.message)

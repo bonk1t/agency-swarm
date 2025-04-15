@@ -1,13 +1,11 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Any, Literal
 
-from openai.types.responses import Response
+from pydantic import BaseModel, Field
 
 
-@dataclass
-class AgentResponse:
+class AgentResponse(BaseModel):
     """Response from an agent.
 
     Attributes:
@@ -15,35 +13,16 @@ class AgentResponse:
         sender_name: Name of sending agent
         receiver_name: Name of receiving agent
         content: Response content
-        raw_response: Raw response object
+        raw_response: Raw response object (optional)
     """
 
-    type: Literal["text", "tool_call", "error"]
-    sender_name: str
-    receiver_name: str
-    content: str
-    raw_response: Any = None
-
-    @classmethod
-    def from_response(
-        cls, response: Response, sender_name: str, receiver_name: str
-    ) -> "AgentResponse":
-        """Create AgentResponse from OpenAI Response object."""
-        # Check for tool calls
-        for output_item in response.output:
-            if output_item.type == "function_call":
-                return cls.from_tool_call(
-                    output_item, sender_name=sender_name, receiver_name=receiver_name
-                )
-
-        # Otherwise treat as text response
-        return cls(
-            type="text",
-            sender_name=sender_name,
-            receiver_name=receiver_name,
-            content=response.output_text,
-            raw_response=response,
-        )
+    type: Literal["text", "tool_call", "error"] = Field(
+        description="Type of response (text, tool_call, error)"
+    )
+    sender_name: str = Field(description="Name of sending agent")
+    receiver_name: str = Field(description="Name of receiving agent")
+    content: str = Field(description="Response content")
+    raw_response: Any | None = Field(default=None, description="Raw response object")
 
     @classmethod
     def from_tool_call(

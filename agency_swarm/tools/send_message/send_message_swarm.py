@@ -17,9 +17,10 @@ class SendMessageSwarm(SendMessageBase):
         output_as_result: bool = True
         one_call_at_a_time: bool = True
 
-    def run(self):
-        # get main thread
-        thread = self._get_main_thread()
+    def run(self, message: str) -> str:
+        """Send a message to the user."""
+        # Get the main thread for user communication
+        thread = self._get_user_thread()
 
         # get recipient agent from thread
         recipient_agent = self._get_recipient_agent()
@@ -47,7 +48,7 @@ class SendMessageSwarm(SendMessageBase):
             thread.cancel_run()
 
             # change recipient agent in thread
-            thread.recipient_agent = recipient_agent
+            thread.recipient = recipient_agent
 
             # change recipient agent in gradio dropdown
             if self._event_handler:
