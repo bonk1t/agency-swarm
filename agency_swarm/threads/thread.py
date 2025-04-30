@@ -47,566 +47,624 @@ class ToolExecutionError(Exception):
 
 
 class Thread:
-    """
-    A Thread represents a bidirectional communication channel between a sender and recipient.
-    The recipient MUST always be an Agent, while the sender can be either a User or an Agent.
-
-    Valid flows:
-    - User -> Agent (sender=User, recipient=Agent)
-    - Agent -> Agent (sender=Agent, recipient=Agent)
-
-    Invalid flow:
-    - Agent -> User (recipient can never be User)
-
-    The Thread maintains complete conversation history locally for full state control.
-    Every message sent through get_response() gets a response from the recipient Agent.
-
-    This class handles both synchronous and parallel tool execution through threading.
-    Note that while tools themselves are synchronous, they can be executed in parallel
-    using thread pools when configured with ToolConfig.async_mode = "threading".
-
-    This is different from ThreadAsync which handles non-blocking agent communication,
-    not asynchronous tool execution.
-    """
-
-    def __init__(
-        self,
-        sender: Agent | User,
-        recipient: Agent,
-        messages: list[dict[str, Any]] | None = None,
-    ):
-        """
-        Initialize a Thread instance.
-
-        Args:
-            sender: The initiator of the conversation (can be User or Agent)
-            recipient: The Agent that will receive and respond to messages
-            messages: Initial message history for the thread
-
-        Raises:
-            TypeError: If recipient is not an Agent
-        """
-        if not isinstance(recipient, Agent):
-            raise TypeError("Thread recipient must be an Agent")
-
-        self.sender = sender
-        self.recipient = recipient
-        self.messages = messages or []
-        self.id = str(uuid.uuid4())
-        self._client = None
-        self.shared_state = None
-        self.tracking_manager = TrackingManager()
-        self._agent_call_counts = {}
+    async_mode: str = None
+    max_workers: int = 4
 
     @property
-    def client(self) -> AsyncOpenAI:
-        """Get or create async OpenAI client."""
-        if not self._client:
-            self._client = get_openai_client()
-        return self._client
+    def thread_url(self):
+        return f"https://platform.openai.com/playground/assistants?assistant={self.recipient_agent.id}&mode=assistant&thread={self.id}"
 
-    def _prepare_tools(self) -> list[dict]:
-        """Convert agent tools to OpenAI format for AsyncResponses API."""
-        if not self.recipient.tools:
-            return []
+    @property
+    def thread(self):
+        self.init_thread()
 
-        tools = []
-        for tool in self.recipient.tools:
-            schema = tool.openai_schema
-            tools.append(schema)
-        return tools
+        if not self._thread:
+            logger.debug(f"Retrieving thread {self.id}")
+            self._thread = self.client.beta.threads.retrieve(self.id)
 
-    def _format_message(
-        self, message: str, message_files: list[str] | None = None
-    ) -> list[dict]:
-        """Format a message into OpenAI's expected message format for AsyncResponses API.
+        return self._thread
 
-        Args:
-            message: String message to format
-            message_files: Optional list of file IDs to attach
+    def __init__(self, agent: Union[Agent, User], recipient_agent: Agent):
+        self.agent = agent
+        self.recipient_agent = recipient_agent
 
-        Returns:
-            List of properly formatted message dicts for AsyncResponses API
-        """
-        if not isinstance(message, str):
-            raise ValueError("Message must be a string")
+        self.client = get_openai_client()
 
-        content = [{"type": "input_text", "text": message}]
-        if message_files:
-            for file_id in message_files:
-                content.append({"type": "input_file", "file_id": file_id})
+        self.id = None
+        self._thread = None
+        self._run = None
+        self._stream = None
 
-        return [{"role": "user", "content": content}]
+        self._num_run_retries = 0
+        # names of recipient agents that were called in SendMessage tool
+        # needed to prevent agents calling the same recipient agent multiple times
+        self._called_recepients = []
 
-    async def _prepare_input(
-        self, message: str, message_files: list[str] | None = None
-    ) -> list[dict]:
-        """Prepare input messages including conversation history.
+        self.terminal_states = [
+            "cancelled",
+            "completed",
+            "failed",
+            "expired",
+            "incomplete",
+        ]
 
-        Formats new message and combines it with existing conversation history.
+        self._tracking_manager = TrackingManager()
 
-        Args:
-            message: New message to add to history
-            message_files: Optional list of file IDs to attach
+    def init_thread(self):
+        self._called_recepients = []
+        self._num_run_retries = 0
 
-        Returns:
-            List of messages including history
-        """
-        # Initialize messages list if None
-        if self.messages is None:
-            self.messages = []
+        if self.id:
+            return
 
-        # Format new message consistently
-        new_messages = self._format_message(message, message_files)
+        self._thread = self.client.beta.threads.create()
+        self.id = self._thread.id
+        if self.recipient_agent.examples:
+            for example in self.recipient_agent.examples:
+                self.client.beta.threads.messages.create(
+                    thread_id=self.id,
+                    **example,
+                )
 
-        # Add new message to history
-        self.messages.extend(new_messages)
-
-        # Return copy to avoid modifying history
-        return self.messages.copy()
-
-    def _extract_text_content(self, response: Response) -> str:
-        """Extract text content from a response in a consistent way.
-
-        Args:
-            response: The OpenAI response object
-
-        Returns:
-            Text content from the response, or empty string if none found
-        """
-        content = ""
-        for output_item in response.output:
-            if output_item.type == "message" and output_item.content:
-                content = output_item.content[0].text
-                break
-        return content
-
-    async def _prepare_conversation_input(
+    def get_completion_stream(
         self,
-        message: str,
-        message_files: list[str] | None = None,
-    ) -> list[dict]:
-        """Prepare conversation input for the API call.
-
-        Always sends the full conversation history to maintain context properly.
-        State is maintained through the complete message history.
-
-        Args:
-            message: The new message to send
-            message_files: Optional list of file IDs to attach
-
-        Returns:
-            List of message dictionaries formatted for the API
-        """
-        # Format the new message
-        new_message = self._format_message(message, message_files)
-
-        # Initialize messages list if needed
-        self.messages = self.messages or []
-
-        # Add new message to history
-        self.messages.extend(new_message)
-
-        # Return full conversation history
-        return self.messages.copy()
-
-    async def get_response(
-        self,
-        message: str,
-        message_files: list[str] | None = None,
-        recipient_agent: Agent | None = None,
-        additional_instructions: str | None = None,
-        tool_choice: ToolChoice | None = None,
-        parent_run_id: str | None = None,
-    ) -> AgentResponse:
-        """Get a response from the recipient Agent.
-
-        Every message sent through this method gets a response from the recipient Agent.
-        The recipient is always an Agent (never a User).
-
-        Args:
-            message: The message to send
-            message_files: Optional list of file IDs to attach
-            recipient_agent: Optional override for the recipient Agent
-            additional_instructions: Optional additional instructions
-            tool_choice: Optional tool choice
-            parent_run_id: Optional parent run ID for tracking
-
-        Returns:
-            AgentResponse containing the Agent's response
-        """
-        if not recipient_agent:
-            recipient_agent = self.recipient
-
-        # Set correct sender/receiver names based on message flow
-        sender_name = "user" if isinstance(self.sender, User) else self.sender.name
-        receiver_name = recipient_agent.name
-
-        # Debug info with clear message flow
-        logger.debug(f"RESPONSE:[ {sender_name} -> {recipient_agent.name} ]")
-
-        # Track start of interaction
-        run_id = self.tracking_manager.start_run(
-            message=message,
-            sender_agent=sender_name,
-            recipient_agent=recipient_agent.name,
-            run_id=None,
-            parent_run_id=parent_run_id,
-            model=recipient_agent.model,
-            temperature=recipient_agent.temperature,
-        )
-
-        try:
-            # Prepare input with conversation history
-            messages = await self._prepare_conversation_input(message, message_files)
-
-            # Create response with complete history
-            response: Response = await self.client.responses.create(
-                model=recipient_agent.model,
-                input=messages,  # Use full history
-                instructions=additional_instructions or recipient_agent.instructions,
-                tools=self._prepare_tools() if recipient_agent.tools else None,
-                temperature=recipient_agent.temperature
-                if recipient_agent.temperature is not None
-                else 0.7,
-                tool_choice=tool_choice if tool_choice is not None else "auto",
-                stream=False,
-            )
-
-            # Process response output
-            tool_calls = []
-            assistant_message = None
-
-            for output_item in response.output:
-                if output_item.type == "function_call":
-                    tool_calls.append(
-                        {
-                            "type": "function_call",
-                            "id": output_item.id,
-                            "name": output_item.name,
-                            "arguments": output_item.arguments,
-                        }
-                    )
-                elif output_item.type == "message" and output_item.content:
-                    assistant_message = output_item.content[0].text
-
-            # Handle tool calls if present
-            if tool_calls:
-                tool_outputs = await self._handle_tool_calls(
-                    tool_calls=tool_calls,
-                    response=response,
-                    recipient_agent=recipient_agent,
-                    event_handler=None,
-                    parent_run_id=parent_run_id,
-                )
-
-                # Add function calls to history
-                self.messages.extend(
-                    [
-                        *[{"type": "function_call", **call} for call in tool_calls],
-                        *[
-                            {
-                                "type": "function_call_output",
-                                "call_id": output["call_id"],
-                                "output": output["content"][0]["text"]
-                                if isinstance(output["content"], list)
-                                else output["content"],
-                            }
-                            for output in tool_outputs
-                            if output["role"] == "tool"
-                        ],
-                    ]
-                )
-
-                # Create agent response with tool outputs
-                agent_response = AgentResponse(
-                    type="tool_call",
-                    sender_name=sender_name,
-                    receiver_name=receiver_name,
-                    content=tool_outputs,
-                    raw_response=response,
-                )
-            else:
-                # Create text response
-                agent_response = AgentResponse(
-                    type="text",
-                    sender_name=sender_name,
-                    receiver_name=receiver_name,
-                    content=assistant_message,
-                    raw_response=response,
-                )
-
-                # Add assistant's message to history
-                self.messages.append(
-                    {
-                        "type": "message",
-                        "content": [{"type": "text", "text": assistant_message}],
-                    }
-                )
-
-            # Track successful completion
-            self.tracking_manager.end_run(agent_response, run_id, parent_run_id)
-
-            return agent_response
-
-        except Exception as e:
-            # Track error and re-raise
-            self.tracking_manager.track_chain_error(e, run_id, parent_run_id)
-            raise
-
-    async def get_response_stream(
-        self,
-        message: str,
+        message: str | list[dict] | None,
         event_handler: Type[AgencyEventHandler],
         message_files: list[str] | None = None,
+        attachments: list[Attachment] | None = None,
         recipient_agent: Agent | None = None,
         additional_instructions: str | None = None,
-        tool_choice: ToolChoice | None = None,
+        tool_choice: AssistantToolChoice | None = None,
+        response_format: dict | None = None,
         parent_run_id: str | None = None,
-    ) -> AsyncIterator[AgentResponse]:
-        """Streaming version of get_response that yields AgentResponse events.
-
-        Every message sent through this method gets a streaming response from the recipient Agent.
-        The recipient is always an Agent (never a User).
-
-        Args:
-            message: The message to send to the Agent
-            event_handler: Handler class for streaming events
-            message_files: Optional list of file IDs to attach
-            recipient_agent: Optional override for the recipient Agent
-            additional_instructions: Optional additional instructions
-            tool_choice: Optional tool choice for specifying which tools to use
-            parent_run_id: Optional parent run ID for tracking
-
-        Yields:
-            AgentResponse events for streaming responses
-
-        Note:
-            Full conversation history is maintained locally and sent with each request
-            to ensure proper state management and context preservation.
-
-        Raises:
-            TypeError: If message is not a string
-        """
-        if not isinstance(message, str):
-            raise TypeError("Message must be a string")
-
-        if not recipient_agent:
-            recipient_agent = self.recipient
-
-        # Debug info
-        sender_name = "user" if isinstance(self.sender, User) else self.sender.name
-        logger.debug(f"RESPONSE_STREAM:[ {sender_name} -> {recipient_agent.name} ]")
-
-        # Prepare input messages using centralized helper
-        input_messages = await self._prepare_conversation_input(message, message_files)
-
-        # Track start of interaction
-        run_id = self.tracking_manager.start_run(
-            message=message,
-            sender_agent=self.sender.name,
-            recipient_agent=recipient_agent.name,
-            run_id=None,
+    ) -> Generator[MessageOutput, None, str]:
+        return self.get_completion(
+            message,
+            message_files,
+            attachments,
+            recipient_agent,
+            additional_instructions,
+            event_handler,
+            tool_choice,
+            yield_messages=False,
+            response_format=response_format,
             parent_run_id=parent_run_id,
-            model=recipient_agent.model,
-            temperature=recipient_agent.temperature,
         )
 
-        try:
-            while True:  # Loop to handle tool calls
-                # Create streaming response
-                stream = await self.client.responses.create(
-                    model=recipient_agent.model,
-                    input=input_messages,
-                    instructions=additional_instructions
-                    or recipient_agent.instructions,
-                    tools=self._prepare_tools() if recipient_agent.tools else None,
-                    temperature=recipient_agent.temperature
-                    if recipient_agent.temperature is not None
-                    else 0.0,
-                    tool_choice=tool_choice or "auto",
-                    stream=True,
+    def get_completion(
+        self,
+        message: str | list[dict] | None,
+        message_files: list[str] | None = None,
+        attachments: list[Attachment] | None = None,
+        recipient_agent: Agent | None = None,
+        additional_instructions: str | None = None,
+        event_handler: Type[AgencyEventHandler] | None = None,
+        tool_choice: AssistantToolChoice | None = None,
+        yield_messages: bool = False,
+        response_format: dict | None = None,
+        parent_run_id: str | None = None,
+    ) -> Generator[MessageOutput, None, str]:
+        """
+        Primary entry point for sending messages to the recipient agent and handling
+        the completion (including tool calls, validations, and re-tries).
+        """
+
+        # 1. Prepare basic thread and attachments
+        self.init_thread()
+        if not recipient_agent:
+            recipient_agent = self.recipient_agent
+        attachments = self._setup_attachments(
+            attachments, message_files, recipient_agent
+        )
+
+        # 2. Optionally set the event handler's agent references
+        if event_handler:
+            event_handler.set_agent(self.agent)
+            event_handler.set_recipient_agent(recipient_agent)
+
+        # 3. Print debug info and send user message
+        self._debug_print_sender_and_url(recipient_agent)
+        message_obj = None
+        if message:
+            message_obj = self.create_message(
+                message=message, role="user", attachments=attachments
+            )
+            if yield_messages:
+                yield MessageOutput(
+                    "text", self.agent.name, recipient_agent.name, message, message_obj
                 )
 
-                tool_calls_in_progress = []
+        # 4. Create run (conversation block)
+        self._create_run(
+            recipient_agent,
+            additional_instructions,
+            event_handler,
+            tool_choice,
+            response_format=response_format,
+        )
+        final_output = None
 
-                async for chunk in stream:
-                    # Handle response creation
-                    if chunk.type == "response.created":
-                        continue
-
-                    # Handle text deltas
-                    if chunk.type == "text.delta":
-                        event_handler.on_text_delta(chunk.text, "")
-                        response = AgentResponse(
-                            type="text",
-                            sender_name=sender_name,
-                            receiver_name=recipient_agent.name,
-                            content=chunk.text,
-                            raw_response=chunk,
-                        )
-                        if self.on_response:
-                            self.on_response(response)
-                        yield response
-
-                    # Handle tool calls
-                    if chunk.type == "function_call":
-                        event_handler.on_tool_call_created(chunk)
-                        tool_calls_in_progress.append(chunk)
-                        response = AgentResponse.from_tool_call(
-                            chunk,
-                            sender_name=sender_name,
-                            receiver_name=recipient_agent.name,
-                        )
-                        if self.on_tool_call:
-                            self.on_tool_call(response)
-                        yield response
-
-                        # Execute tool
-                        try:
-                            result = await self._execute_tool(
-                                tool_call=chunk,
-                                recipient_agent=recipient_agent,
-                                event_handler=event_handler,
-                            )
-                            event_handler.on_tool_call_completed(chunk, result)
-
-                            # Add tool response to history
-                            self.messages.append(
-                                {
-                                    "role": "tool",
-                                    "content": result,
-                                    "tool_call_id": chunk.id,
-                                }
-                            )
-
-                        except Exception as e:
-                            event_handler.on_tool_call_error(chunk, str(e))
-                            error_response = AgentResponse.from_error(
-                                e,
-                                sender_name=sender_name,
-                                receiver_name=recipient_agent.name,
-                            )
-                            if self.on_error:
-                                self.on_error(error_response)
-                            yield error_response
-
-                    # Handle completion
-                    if chunk.type == "response.completed":
-                        event_handler.on_response_completed()
-
-                        # If we have tool calls, continue streaming with updated context
-                        if tool_calls_in_progress:
-                            break  # Break inner loop to start new stream with tool outputs
-                        else:
-                            return  # No tool calls, we're done
-
-                # If we had tool calls, continue with a new stream
-                if not tool_calls_in_progress:
-                    break  # No more tool calls, exit outer loop
-
-        except Exception as e:
-            error_response = AgentResponse.from_error(
-                e, sender_name=sender_name, receiver_name=recipient_agent.name
-            )
-            self.tracking_manager.track_chain_error(
-                error_response, run_id, parent_run_id
-            )
-            if self.on_error:
-                self.on_error(error_response)
-            raise e
-
-    async def _execute_tool(
-        self,
-        tool_call: Any,
-        recipient_agent: Agent,
-        event_handler: Type[AgencyEventHandler] | None,
-    ) -> str:
-        """Execute a tool and return its result.
-
-        This method handles three types of tool execution:
-        1. Async execution via run_async() - for tools configured with async_mode
-        2. Coroutine execution - for tools that return coroutines from run()
-        3. Synchronous execution - for regular tools
-
-        The execution order is:
-        1. Try run_async() if tool is configured for async
-        2. Try run() and await if it returns a coroutine
-        3. Fall back to synchronous run()
-        """
-        tool = next(
-            (t for t in recipient_agent.tools if t.__name__ == tool_call.function.name),
-            None,
+        # 5. Fire run start callbacks
+        self._tracking_manager.start_run(
+            message,
+            self.agent.name,
+            recipient_agent.name,
+            run_id=self._run.id,
+            parent_run_id=parent_run_id,
+            message_obj=message_obj,
+            model=self._run.model,
+            temperature=self._run.temperature,
         )
 
-        if not tool:
-            error_msg = f"Tool {tool_call.function.name} not found"
-            logger.error(error_msg)
-            raise ToolNotFoundError(error_msg)
+        # 6. Main try/except around the run loop
+        final_output = yield from self._execute_main_loop(
+            yield_messages=yield_messages,
+            recipient_agent=recipient_agent,
+            event_handler=event_handler,
+            parent_run_id=parent_run_id,
+            additional_instructions=additional_instructions,
+            tool_choice=tool_choice,
+            response_format=response_format,
+        )
+
+        if final_output is None:
+            raise Exception("No output was generated from the execution loop")
+
+        return final_output
+
+    def _execute_main_loop(
+        self,
+        yield_messages: bool,
+        recipient_agent: Agent,
+        event_handler: Type[AgencyEventHandler] | None,
+        parent_run_id: str | None,
+        additional_instructions: str | None,
+        tool_choice: AssistantToolChoice | None,
+        response_format: dict | None,
+    ) -> Generator[MessageOutput, None, str]:
+        """
+        Encapsulates the 'while True' run loop from get_completion to reduce
+        cognitive load in the main method. Yields any MessageOutput events
+        and returns the final output string.
+        """
+        error_attempts = 0
+        validation_attempts = 0
+        full_message = ""
+        final_output = None
+
+        while True:
+            self._run_until_done()
+
+            if self._run.status == "requires_action":
+                maybe_output = yield from self._handle_run_requires_action(
+                    recipient_agent,
+                    event_handler,
+                    yield_messages,
+                    parent_run_id,
+                    additional_instructions,
+                )
+                if maybe_output is not None:
+                    final_output = maybe_output
+                    break
+
+            elif self._run.status == "failed":
+                # If the run fails, try re-running on certain error messages
+                full_message += self._get_last_message_text()
+                retry_successful = self._try_run_failed_recovery(
+                    error_attempts,
+                    recipient_agent,
+                    additional_instructions,
+                    event_handler,
+                    tool_choice,
+                    response_format,
+                    parent_run_id,
+                )
+                error_attempts += 1
+                if not retry_successful:
+                    raise Exception(
+                        "OpenAI Run Failed. Error: ", self._run.last_error.message
+                    )
+
+            elif self._run.status == "incomplete":
+                self._on_run_incomplete(parent_run_id)
+
+            else:
+                # final assistant message
+                message_obj = self._get_last_assistant_message()
+                last_message = message_obj.content[0].text.value
+                full_message += last_message
+
+                if yield_messages:
+                    yield MessageOutput(
+                        "text",
+                        recipient_agent.name,
+                        self.agent.name,
+                        last_message,
+                        message_obj,
+                    )
+
+                result = self._validate_assistant_response(
+                    recipient_agent,
+                    last_message,
+                    validation_attempts,
+                    yield_messages,
+                    additional_instructions,
+                    event_handler,
+                    tool_choice,
+                    response_format,
+                )
+                if result is not None:
+                    # The function no longer yields, so `result` is a dict, not a generator
+                    for mo in result.get("message_outputs", []):
+                        yield mo  # yield the stored MessageOutput objects
+                    validation_attempts = result["validation_attempts"]
+                    if result["continue_loop"]:
+                        continue
+
+                if final_output is None:
+                    final_output = last_message
+                break
+
+        return final_output
+
+    def _create_run(
+        self,
+        message: str,
+        message_files: list[str] | None = None,
+        recipient_agent: Agent | None = None,
+        additional_instructions: str | None = None,
+        event_handler: Type[AgencyEventHandler] | None = None,
+        tool_choice: AssistantToolChoice | None = None,
+        temperature: float | None = None,
+        response_format: dict | None = None,
+    ):
+        # Always start from a clean slate
+        self._ensure_no_active_run(action="cancel")
+        try:
+            if event_handler:
+                with self.client.beta.threads.runs.stream(
+                    thread_id=self.id,
+                    event_handler=event_handler(),
+                    assistant_id=recipient_agent.id,
+                    additional_instructions=additional_instructions,
+                    tool_choice=tool_choice,
+                    max_prompt_tokens=recipient_agent.max_prompt_tokens,
+                    max_completion_tokens=recipient_agent.max_completion_tokens,
+                    truncation_strategy=recipient_agent.truncation_strategy,
+                    temperature=temperature,
+                    extra_body={
+                        "parallel_tool_calls": recipient_agent.parallel_tool_calls
+                    },
+                    response_format=response_format,
+                ) as stream:
+                    stream.until_done()
+                    self._run = stream.get_final_run()
+            else:
+                self._run = self.client.beta.threads.runs.create(
+                    thread_id=self.id,
+                    assistant_id=recipient_agent.id,
+                    additional_instructions=additional_instructions,
+                    tool_choice=tool_choice,
+                    max_prompt_tokens=recipient_agent.max_prompt_tokens,
+                    max_completion_tokens=recipient_agent.max_completion_tokens,
+                    truncation_strategy=recipient_agent.truncation_strategy,
+                    temperature=temperature,
+                    parallel_tool_calls=recipient_agent.parallel_tool_calls,
+                    response_format=response_format,
+                )
+                self._run = self.client.beta.threads.runs.poll(
+                    thread_id=self.id,
+                    run_id=self._run.id,
+                )
+        except APIError as e:
+            match = re.search(
+                r"Thread (\w+) already has an active run (\w+)", e.message
+            )
+            if match:
+                self.cancel_run(
+                    thread_id=match.groups()[0],
+                    run_id=match.groups()[1],
+                    check_status=False,
+                )
+                # Reattempt creating a new run after cancellation.
+                return self._create_run(
+                    recipient_agent,
+                    additional_instructions,
+                    event_handler,
+                    tool_choice,
+                    temperature=temperature,
+                    response_format=response_format,
+                )
+            elif (
+                "The server had an error processing your request" in e.message
+                and self._num_run_retries < 3
+            ):
+                time.sleep(1)
+                self._num_run_retries += 1
+                return self._create_run(
+                    recipient_agent,
+                    additional_instructions,
+                    event_handler,
+                    tool_choice,
+                    temperature=temperature,
+                    response_format=response_format,
+                )
+            else:
+                raise e
+
+    def _run_until_done(self):
+        while self._run.status in ["queued", "in_progress", "cancelling"]:
+            time.sleep(0.5)
+            self._run = self.client.beta.threads.runs.retrieve(
+                thread_id=self.id, run_id=self._run.id
+            )
+
+    def submit_tool_outputs(self, tool_outputs, event_handler=None, poll=True):
+        if not poll:
+            self._run = self.client.beta.threads.runs.submit_tool_outputs(
+                thread_id=self.id, run_id=self._run.id, tool_outputs=tool_outputs
+            )
+        else:
+            if not event_handler:
+                self._run = self.client.beta.threads.runs.submit_tool_outputs_and_poll(
+                    thread_id=self.id, run_id=self._run.id, tool_outputs=tool_outputs
+                )
+            else:
+                with self.client.beta.threads.runs.submit_tool_outputs_stream(
+                    thread_id=self.id,
+                    run_id=self._run.id,
+                    tool_outputs=tool_outputs,
+                    event_handler=event_handler(),
+                ) as stream:
+                    stream.until_done()
+                    self._run = stream.get_final_run()
+
+    def cancel_run(self, thread_id=None, run_id=None, check_status=True):
+        if (
+            check_status
+            and (not self._run or self._run.status in self.terminal_states)
+            and not run_id
+        ):
+            return
 
         try:
-            # Parse arguments
-            args = json.loads(tool_call.function.arguments)
+            actual_thread_id = thread_id or self.id
+            actual_run_id = run_id or (self._run.id if self._run else None)
 
-            # Log tool execution with context
-            logger.debug(
-                f"Executing tool {tool_call.function.name} with args: {json.dumps(args, indent=2)}"
+            if not actual_run_id:
+                logger.warning(
+                    f"Can't cancel without a run ID: thread_id={actual_thread_id}"
+                )
+                return
+
+            self._run = self.client.beta.threads.runs.cancel(
+                thread_id=actual_thread_id, run_id=actual_run_id
             )
 
-            # Create tool instance
+            self._run = self.client.beta.threads.runs.poll(
+                thread_id=actual_thread_id,
+                run_id=actual_run_id,
+                poll_interval_ms=500,
+            )
+        except BadRequestError as e:
+            if "Cannot cancel run with status" in e.message:
+                self._run = self.client.beta.threads.runs.poll(
+                    thread_id=actual_thread_id,
+                    run_id=actual_run_id,
+                    poll_interval_ms=500,
+                )
+            else:
+                raise e
+
+    def _get_last_message_text(self):
+        messages = self.client.beta.threads.messages.list(thread_id=self.id, limit=1)
+
+        if len(messages.data) == 0 or len(messages.data[0].content) == 0:
+            return ""
+
+        return messages.data[0].content[0].text.value
+
+    def _get_last_assistant_message(self):
+        messages = self.client.beta.threads.messages.list(thread_id=self.id, limit=1)
+
+        if len(messages.data) == 0 or len(messages.data[0].content) == 0:
+            raise Exception("No messages found in the thread")
+
+        message = messages.data[0]
+
+        if message.role == "assistant":
+            return message
+
+        raise Exception("No assistant message found in the thread")
+
+    def create_message(
+        self,
+        message: str | list[dict],
+        role: str = "user",
+        attachments: list[Attachment] | None = None,
+    ) -> Message:
+        # Never post while a run is still alive
+        self._ensure_no_active_run(action="wait")
+        try:
+            return self.client.beta.threads.messages.create(
+                thread_id=self.id, role=role, content=message, attachments=attachments
+            )
+        except BadRequestError as e:
+            regex = re.compile(
+                r"Can't add messages to thread_([a-zA-Z0-9]+) while a run run_([a-zA-Z0-9]+) is active\."
+            )
+            match = regex.search(str(e))
+
+            if match:
+                thread_id, run_id = match.groups()
+                thread_id = f"thread_{thread_id}"
+                run_id = f"run_{run_id}"
+
+                self.cancel_run(thread_id=thread_id, run_id=run_id)
+
+                return self.client.beta.threads.messages.create(
+                    thread_id=thread_id,
+                    role=role,
+                    content=message,
+                    attachments=attachments,
+                )
+            else:
+                raise e
+
+    def execute_tool(
+        self,
+        tool_call: ToolCall,
+        recipient_agent=None,
+        event_handler=None,
+        tool_outputs_and_names=None,
+    ) -> tuple[str | Generator[MessageOutput, None, None], bool]:
+        if not recipient_agent:
+            recipient_agent = self.recipient_agent
+        if tool_outputs_and_names is None:
+            tool_outputs_and_names = []
+
+        is_retriever = tool_call.type == "file_search"
+
+        tool_name = tool_call.function.name
+        funcs = recipient_agent.functions
+        tool = next((func for func in funcs if func.__name__ == tool_name), None)
+
+        try:
+            # Track start of tool execution
+            self._tracking_manager.track_tool_start(
+                tool_call=tool_call,
+                run=self._run,
+                agent_name=self.agent.name,
+                recipient_agent_name=recipient_agent.name,
+                is_retriever=is_retriever,
+            )
+
+            # init tool
+            args = tool_call.function.arguments
+            args = json.loads(args) if args else {}
             tool_instance = tool(**args)
 
-            # Set shared state if available
-            if hasattr(recipient_agent, "shared_state"):
-                tool_instance._shared_state = recipient_agent.shared_state
+            # check if the tool is already called
+            for existing_tool_name in [name for name, _ in tool_outputs_and_names]:
+                if tool_name == existing_tool_name and (
+                    hasattr(tool_instance, "ToolConfig")
+                    and hasattr(tool_instance.ToolConfig, "one_call_at_a_time")
+                    and tool_instance.ToolConfig.one_call_at_a_time
+                ):
+                    error_message = f"Error: Function {tool_name} is already called. You can only call this function once at a time. Please wait for the previous call to finish before calling it again."
+                    raise RuntimeError(error_message)
 
-            # Try to execute the tool in the appropriate mode
-            if (
-                hasattr(tool, "ToolConfig")
-                and hasattr(tool.ToolConfig, "async_mode")
-                and tool.ToolConfig.async_mode
-            ):
-                # Use run_async for tools configured for async execution
-                result = await tool_instance.run_async()
-            else:
-                # Try regular run() first
-                result = tool_instance.run()
+            # for send message tools, don't allow calling the same recipient agent multiple times
+            if tool_name.startswith("SendMessage"):
+                if tool_instance.recipient.value in self._called_recepients:
+                    error_message = f"Error: Agent {tool_instance.recipient.value} has already been called. You can only call each agent once at a time. Please wait for the previous call to finish before calling it again."
+                    raise RuntimeError(error_message)
 
-                # If run() returned a coroutine, await it
-                if inspect.iscoroutine(result):
-                    result = await result
+                self._called_recepients.append(tool_instance.recipient.value)
 
-            # Convert result to string
-            if isinstance(result, (dict, list)):
-                result = json.dumps(result)
-            else:
-                result = str(result)
+            tool_instance._caller_agent = recipient_agent
+            tool_instance._event_handler = event_handler
+            tool_instance._tool_call = tool_call
 
-            logger.debug(
-                f"Tool {tool_call.function.name} executed successfully with result type: {type(result)}"
-            )
-            return result
+            output = tool_instance.run()
+            return output, tool_instance.ToolConfig.output_as_result
 
         except Exception as e:
-            error_context = {
-                "tool_arguments": tool_call.function.arguments,
-                "recipient_agent": recipient_agent.name,
-                "event_handler_type": type(event_handler).__name__
-                if event_handler
-                else None,
-            }
+            error_message = f"Error: {e}"
+            if "For further information visit" in error_message:
+                error_message = error_message.split("For further information visit")[0]
 
-            logger.error(
-                f"Error executing tool {tool_call.function.name}: {str(e)}\n"
-                f"Context: {json.dumps(error_context, indent=2)}"
+            # Track error
+            self._tracking_manager.track_tool_error(
+                error=Exception(error_message),
+                tool_call=tool_call,
+                parent_run_id=self._run.id,
+                is_retriever=is_retriever,
             )
 
-            raise ToolExecutionError(
-                message="Failed to execute tool",
-                tool_name=tool_call.function.name,
-                original_error=e,
-                **error_context,
+            return error_message, False
+
+    def _await_coroutines(self, tool_outputs):
+        async_tool_calls = []
+        for tool_output in tool_outputs:
+            if inspect.iscoroutine(tool_output["output"]):
+                async_tool_calls.append(tool_output)
+
+        if async_tool_calls:
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_closed():
+                    raise RuntimeError
+            except RuntimeError:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                loop = asyncio.get_event_loop()
+
+            results = loop.run_until_complete(
+                asyncio.gather(
+                    *[call["output"] for call in async_tool_calls],
+                    return_exceptions=True,  # Capture exceptions to set as individual results
+                )
             )
+
+            for tool_output, result in zip(async_tool_calls, results):
+                tool_output["output"] = str(result)
+
+        return tool_outputs
+
+    def _get_sync_async_tool_calls(
+        self, tool_calls: list[RequiredActionFunctionToolCall], recipient_agent: Agent
+    ):
+        async_tool_calls = []
+        sync_tool_calls = []
+
+        for tool_call in tool_calls:
+            try:
+                if tool_call.function.name.startswith("SendMessage"):
+                    sync_tool_calls.append(tool_call)
+                    continue
+
+                tool = next(
+                    (
+                        func
+                        for func in recipient_agent.functions
+                        if func.__name__ == tool_call.function.name
+                    ),
+                    None,
+                )
+
+                # Check if the tool found has async_mode = 'threading'
+                if (
+                    hasattr(tool, "ToolConfig")
+                    and getattr(tool.ToolConfig, "async_mode", None) == "threading"
+                ):
+                    async_tool_calls.append(tool_call)
+                else:
+                    sync_tool_calls.append(tool_call)
+
+            except Exception as e:
+                error_context = {
+                    "tool_arguments": tool_call.function.arguments,
+                    "recipient_agent": recipient_agent.name,
+                    "event_handler_type": type(event_handler).__name__
+                    if event_handler
+                    else None,
+                }
+
+                logger.error(
+                    f"Error processing tool {tool_call.function.name}: {str(e)}\n"
+                    f"Context: {json.dumps(error_context, indent=2)}"
+                )
+
+                # Re-raise as a more specific error, possibly add to outputs later if needed
+                raise ToolExecutionError(
+                    message="Failed to process tool call within _get_sync_async_tool_calls",
+                    tool_name=tool_call.function.name,
+                    original_error=e,
+                    **error_context,
+                )
+
+        return sync_tool_calls, async_tool_calls
 
     def _check_agent_calls(self, caller_name: str, target_name: str) -> None:
         """Check if maximum number of calls between agents has been exceeded.
@@ -709,236 +767,329 @@ class Thread:
                         result = await new_thread.get_response(
                             message=args["message"], parent_run_id=tool_call["id"]
                         )
-
-                        if self.__class__.__name__ == "ThreadAsync":
-                            self._tool_results[tool_call["id"]] = result.content
-                            if tool_call in self._tool_calls_in_progress:
-                                self._tool_calls_in_progress.remove(tool_call)
-
-                        tool_outputs.append(
-                            {
-                                "role": "tool",
-                                "type": "function_call_output",
-                                "call_id": tool_call["id"],
-                                "content": [
-                                    {"type": "output_text", "text": result.content}
-                                ],
-                            }
-                        )
-                    finally:
-                        # Clear agent call state after completion
-                        self._clear_agent_calls()
-
-                else:
-                    # Handle other tools
-                    result = await self._execute_tool(
-                        tool_call=tool_call,
-                        recipient_agent=recipient_agent,
-                        event_handler=event_handler,
-                    )
-
-                    if self.__class__.__name__ == "ThreadAsync":
-                        self._tool_results[tool_call["id"]] = result
-                        if tool_call in self._tool_calls_in_progress:
-                            self._tool_calls_in_progress.remove(tool_call)
-
-                    tool_outputs.append(
-                        {
-                            "role": "tool",
-                            "type": "function_call_output",
-                            "call_id": tool_call["id"],
-                            "content": [{"type": "output_text", "text": str(result)}],
+                    except Exception as e:
+                        error_context = {
+                            "tool_arguments": tool_call.function.arguments,
+                            "recipient_agent": recipient_agent.name,
+                            "event_handler_type": type(event_handler).__name__
+                            if event_handler
+                            else None,
                         }
-                    )
 
-                # Track successful tool execution
-                self.tracking_manager.track_tool_end(
-                    output=result,
-                    tool_call=tool_call,
-                    parent_run_id=response.id,
-                )
+                        logger.error(
+                            f"Error processing tool {tool_call.function.name}: {str(e)}\n"
+                            f"Context: {json.dumps(error_context, indent=2)}"
+                        )
+
+                        # Re-raise as a more specific error, possibly add to outputs later if needed
+                        raise ToolExecutionError(
+                            message="Failed to process tool call within _handle_tool_calls",
+                            tool_name=tool_call.function.name,
+                            original_error=e,
+                            **error_context,
+                        )
+
+                    # Process futures
+                    try:
+                        async for future in as_completed(futures):
+                            tool_call = futures[future]
+                            output, output_as_result = await future
+                            if output_as_result:
+                                self.cancel_run()
+                                final_output = output
+                                break
+                    except Exception as e:
+                        logger.error(f"Error executing async tool call: {e}")
+                        output = f"Error: {str(e)}"
+                        output_as_result = False
 
             except Exception as e:
-                # Track tool error
-                if self.__class__.__name__ == "ThreadAsync":
-                    self._tool_results[tool_call["id"]] = str(e)
-                    if tool_call in self._tool_calls_in_progress:
-                        self._tool_calls_in_progress.remove(tool_call)
+                error_context = {
+                    "tool_arguments": tool_call.function.arguments,
+                    "recipient_agent": recipient_agent.name,
+                    "event_handler_type": type(event_handler).__name__
+                    if event_handler
+                    else None,
+                }
 
-                tool_outputs.append(
-                    {
-                        "role": "tool",
-                        "type": "function_call_output",
-                        "call_id": tool_call["id"],
-                        "content": [
-                            {"type": "output_text", "text": f"Error: {str(e)}"}
-                        ],
-                    }
+                logger.error(
+                    f"Error processing tool {tool_call.function.name}: {str(e)}\n"
+                    f"Context: {json.dumps(error_context, indent=2)}"
                 )
 
-                self.tracking_manager.track_tool_error(
-                    error=e,
-                    tool_call=tool_call,
-                    parent_run_id=response.id,
-                )
-                tool_outputs.append(
-                    {
-                        "role": "tool",
-                        "content": f"Error: {str(e)}",
-                        "tool_call_id": tool_call.id,
-                    }
+                # Re-raise as a more specific error, possibly add to outputs later if needed
+                raise ToolExecutionError(
+                    message="Failed to process tool call within _handle_tool_calls",
+                    tool_name=tool_call.function.name,
+                    original_error=e,
+                    **error_context,
                 )
 
-        # Handle parallel tool execution if any tools are configured for it
-        if (
-            parallel_tool_calls
-            and getattr(self, "async_mode", "none") == "tools_threading"
-        ):
-            import asyncio
+        # If a tool call had "output_as_result", return immediately
+        if final_output is not None:
+            return final_output
 
-            # Execute all parallel tools concurrently using their run_async methods
-            parallel_results = await asyncio.gather(
-                *[
-                    self._execute_tool(tool_call, recipient_agent, event_handler)
-                    for tool_call in parallel_tool_calls
-                ],
-                return_exceptions=False,
+        tool_outputs = [t for _, t in tool_outputs_and_names]
+        tool_names = [n for n, _ in tool_outputs_and_names]
+
+        tool_outputs = self._await_coroutines(tool_outputs)
+
+        for to_ in tool_outputs:
+            if not isinstance(to_["output"], str):
+                to_["output"] = str(to_["output"])
+
+        if event_handler:
+            event_handler.set_agent(self.agent)
+            event_handler.set_recipient_agent(recipient_agent)
+
+        try:
+            self.submit_tool_outputs(tool_outputs, event_handler)
+        except BadRequestError as e:
+            if 'Runs in status "expired"' in e.message:
+                self.create_message(
+                    message="Previous request timed out. Please repeat the exact same tool calls in the exact same order with the same arguments.",
+                    role="user",
+                )
+                self._create_run(
+                    recipient_agent,
+                    additional_instructions,
+                    event_handler,
+                    "required",
+                    temperature=0,
+                )
+                self._run_until_done()
+
+                if self._run.status != "requires_action":
+                    raise Exception(
+                        "Run Failed. Error: ",
+                        self._run.last_error or self._run.incomplete_details,
+                    )
+                tool_calls = self._run.required_action.submit_tool_outputs.tool_calls
+                if len(tool_calls) != len(tool_outputs):
+                    # If the tool calls changed, mark them as an error
+                    tool_outputs = []
+                    for i, tool_call in enumerate(tool_calls):
+                        tool_outputs.append(
+                            {
+                                "tool_call_id": tool_call.id,
+                                "output": "Error: openai run timed out. You can try again one more time.",
+                            }
+                        )
+                else:
+                    # Re-map tool_outputs to the new tool_call IDs
+                    for i, tool_name in enumerate(tool_names):
+                        for tool_call in tool_calls[:]:
+                            if tool_call.function.name == tool_name:
+                                tool_outputs[i]["tool_call_id"] = tool_call.id
+                                tool_calls.remove(tool_call)
+                                break
+
+                self.submit_tool_outputs(tool_outputs, event_handler)
+            else:
+                raise e
+
+        # Return None so the outer loop continues
+        return None
+
+    # -----------------------------
+    # Private helper methods
+    # -----------------------------
+
+    def _ensure_no_active_run(self, action: str = "wait") -> None:
+        """
+        Make sure the thread is in a safe state before any mutating call.
+
+        Parameters
+        ----------
+        action : {"wait", "cancel"}
+            "wait"   – block until the current run reaches a terminal state.
+            "cancel" – actively cancel the run, then wait until the
+                        cancellation is confirmed.
+        """
+        if not self._run or self._run.status in self.terminal_states:
+            return  # already safe
+
+        if action == "cancel":
+            self.cancel_run()  # poll() inside guarantees termination
+        else:
+            self._run_until_done()  # passive wait
+
+        # Defensive sanity-check
+        if self._run and self._run.status not in self.terminal_states:
+            raise RuntimeError(
+                f"Run {self._run.id} still active after _ensure_no_active_run "
+                f"(status={self._run.status})."
             )
 
-            # Process results
-            for tool_call, result in zip(parallel_tool_calls, parallel_results):
-                try:
-                    tool_output = {
-                        "role": "tool",
-                        "content": str(result),
-                        "tool_call_id": tool_call.id,
-                    }
+    def _setup_attachments(
+        self,
+        attachments: list[Attachment] | None,
+        message_files: list[str] | None,
+        recipient_agent: Agent,
+    ) -> list[Attachment]:
+        """Prepare attachments (file_ids, relevant tools) if provided."""
+        if not attachments:
+            attachments = []
 
-                    if isinstance(self, ThreadAsync):
-                        self._tool_results[tool_call.id] = result
-                        if tool_call in self._tool_calls_in_progress:
-                            self._tool_calls_in_progress.remove(tool_call)
+        if message_files:
+            recipient_tools = []
 
-                    self.tracking_manager.track_tool_end(
-                        output=result,
-                        tool_call=tool_call,
-                        parent_run_id=response.id,
+            if FileSearch in recipient_agent.tools:
+                recipient_tools.append({"type": "file_search"})
+            if CodeInterpreter in recipient_agent.tools:
+                recipient_tools.append({"type": "code_interpreter"})
+
+            for file_id in message_files:
+                attachments.append(
+                    Attachment(
+                        file_id=file_id,
+                        tools=recipient_tools or [{"type": "file_search"}],
                     )
+                )
 
-                    tool_outputs.append(tool_output)
-                except Exception as e:
-                    # Handle errors
-                    if isinstance(self, ThreadAsync):
-                        self._tool_results[tool_call.id] = str(e)
-                        if tool_call in self._tool_calls_in_progress:
-                            self._tool_calls_in_progress.remove(tool_call)
+        return attachments
 
-                    self.tracking_manager.track_tool_error(
-                        error=e,
-                        tool_call=tool_call,
-                        parent_run_id=response.id,
-                    )
-
-                    tool_outputs.append(
-                        {
-                            "role": "tool",
-                            "content": f"Error: {str(e)}",
-                            "tool_call_id": tool_call.id,
-                        }
-                    )
-
-        # Add assistant message with tool calls
-        tool_outputs.insert(
-            0, {"role": "assistant", "content": None, "tool_calls": tool_calls}
+    def _debug_print_sender_and_url(self, recipient_agent):
+        """Utility method to print debug info about the conversation.
+        Determines the sender's name based on the agent type.
+        """
+        sender_name = "user" if isinstance(self.agent, User) else self.agent.name
+        logger.info(
+            f"THREAD:[ {sender_name} -> {recipient_agent.name} ]: URL {self.thread_url}"
         )
 
-        return tool_outputs
-
-    def _get_sync_async_tool_calls(
-        self, tool_calls: list[dict], recipient_agent: Agent
-    ) -> tuple[list[dict], list[dict]]:
-        """Split tool calls into synchronous and parallel (threaded) execution groups.
-
-        Tools can be executed in two ways:
-        1. Synchronously - one after another in the main thread
-        2. In parallel - using a thread pool when marked with ToolConfig.async_mode = "threading"
-
-        Note: The tools themselves are synchronous Python functions, but can be run in separate
-        threads for concurrent execution when configured for parallel execution.
-
-        Args:
-            tool_calls: List of tool calls to process
-            recipient_agent: Agent whose tools are being called
-
-        Returns:
-            Tuple of (sync_tool_calls, parallel_tool_calls)
-
-        Raises:
-            ValueError: If a tool is not found in the agent's tools
-        """
-        parallel_tool_calls: list[dict] = []
-        sync_tool_calls: list[dict] = []
-
-        for tool_call in tool_calls:
-            # Handle both object and dictionary access
-            tool_name = tool_call.get("function", {}).get("name")
-
-            if not tool_name:
-                error_message = f"Invalid tool call format: {tool_call}"
-                logger.error(error_message)
-                raise ValueError(error_message)
-
-            if tool_name.startswith("SendMessage"):
-                sync_tool_calls.append(tool_call)
-                continue
-
-            tool = next(
-                (func for func in recipient_agent.tools if func.__name__ == tool_name),
-                None,
-            )
-
-            if tool is None:
-                error_message = (
-                    f"Tool {tool_name} not found in agent {recipient_agent.name}."
-                )
-                logger.error(error_message)
-                raise ValueError(error_message)
-
-            # Check if tool is configured for parallel execution
-            if (
-                hasattr(tool, "ToolConfig")
-                and hasattr(tool.ToolConfig, "async_mode")
-                and tool.ToolConfig.async_mode
-            ) or self.async_mode == "tools_threading":
-                parallel_tool_calls.append(tool_call)
+    def _try_run_failed_recovery(
+        self,
+        error_attempts: int,
+        recipient_agent: Agent,
+        additional_instructions: str | None,
+        event_handler: Type[AgencyEventHandler] | None,
+        tool_choice: AssistantToolChoice | None,
+        response_format: dict | None,
+        parent_run_id: str | None,
+    ) -> bool:
+        """Attempts to recover from run failures if they match common errors (up to 3 times)."""
+        error_message = (
+            self._run.last_error.message.lower() if self._run.last_error else ""
+        )
+        common_errors = [
+            "something went wrong",
+            "the server had an error processing your request",
+            "rate limit reached",
+        ]
+        if error_attempts < 3 and any(e in error_message for e in common_errors):
+            if error_attempts < 2:
+                time.sleep(1 + error_attempts)
             else:
-                sync_tool_calls.append(tool_call)
+                # Make one last try with a 'Continue.' user prompt
+                self.create_message(message="Continue.", role="user")
 
-        return sync_tool_calls, parallel_tool_calls
+            self._create_run(
+                recipient_agent,
+                additional_instructions,
+                event_handler,
+                tool_choice,
+                response_format=response_format,
+            )
+            return True
+        else:
+            # chain error
+            self._tracking_manager.track_chain_error(
+                error=Exception(f"OpenAI Run Failed. Error: {error_message}"),
+                run_id=self._run.id,
+                parent_run_id=parent_run_id,
+            )
+            return False
 
-    def _get_recipient_agent(self, agent_name: str) -> Agent:
-        """Get the recipient agent by name."""
-        if agent_name == self.recipient.name:
-            return self.recipient
+    def _on_run_incomplete(self, parent_run_id: str | None):
+        """Handle incomplete runs by firing chain error callbacks and raising an exception."""
+        self._tracking_manager.track_chain_error(
+            error=Exception(
+                "OpenAI Run Incomplete. Details: " + str(self._run.incomplete_details)
+            ),
+            run_id=self._run.id,
+            parent_run_id=parent_run_id,
+        )
+        raise Exception(
+            "OpenAI Run Incomplete. Details: ", self._run.incomplete_details
+        )
 
-        if hasattr(self.recipient, "agency"):
-            agent = self.recipient.agency._get_agent_by_name(agent_name)
-            if agent:
-                return agent
-
-        raise ValueError(f"Agent {agent_name} not found")
-
-    async def _upload_file(self, file_path: str) -> str:
-        """Upload a file to OpenAI and return its ID.
-
-        Args:
-            file_path: Path to file to upload
+    def _validate_assistant_response(
+        self,
+        recipient_agent: Agent,
+        last_message: str,
+        validation_attempts: int,
+        yield_messages: bool,
+        additional_instructions: str | None,
+        event_handler: Type[AgencyEventHandler] | None,
+        tool_choice: AssistantToolChoice | None,
+        response_format: dict | None,
+    ):
+        """
+        If recipient_agent has a response validator, attempt to validate the last_message.
+        If validation fails, send the validation prompt back to the agent and re-create run.
 
         Returns:
-            File ID from OpenAI
+        - None if validation passes
+        - A dict if validation fails, containing:
+            {
+            "validation_attempts": int,
+            "continue_loop": bool,
+            "message_outputs": List[MessageOutput]   (possibly empty if no messages to yield)
+            }
         """
-        purpose = get_file_purpose(file_path)
+        if recipient_agent.response_validator:
+            try:
+                recipient_agent.response_validator(message=last_message)
+            except Exception as e:
+                # We only retry if below the maximum number of validation attempts
+                if validation_attempts < recipient_agent.validation_attempts:
+                    # Attempt to parse the exception as text
+                    message_outputs = []
+                    try:
+                        evaluated_content = eval(str(e))
+                        content = (
+                            evaluated_content
+                            if isinstance(evaluated_content, list)
+                            else str(e)
+                        )
+                    except Exception as e2:
+                        content = str(e2)
 
-        with open(file_path, "rb") as f:
-            file = await self.client.files.create(file=f, purpose=purpose)
-            return file.id
+                    # Create the user message to inform the model about the validation error
+                    message_obj = self.create_message(message=content, role="user")
+
+                    # If we were streaming messages, store them to yield in the caller
+                    if yield_messages and hasattr(message_obj.content[0], "text"):
+                        message_outputs.append(
+                            MessageOutput(
+                                "text",
+                                self.agent.name,
+                                recipient_agent.name,
+                                message_obj.content[0].text.value,
+                                message_obj,
+                            )
+                        )
+
+                    # Fire the event handler callbacks for the message
+                    if event_handler:
+                        handler = event_handler()
+                        handler.on_message_created(message_obj)
+                        handler.on_message_done(message_obj)
+
+                    # Increment validations and recreate run
+                    validation_attempts += 1
+                    self._create_run(
+                        recipient_agent,
+                        additional_instructions,
+                        event_handler,
+                        tool_choice,
+                        response_format=response_format,
+                    )
+                    # Return structured info for the caller
+                    return {
+                        "validation_attempts": validation_attempts,
+                        "continue_loop": True,
+                        "message_outputs": message_outputs,
+                    }
+        return None

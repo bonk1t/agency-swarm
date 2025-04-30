@@ -18,8 +18,8 @@ class MultiCallbackHandler:
     def __init__(self, handlers: Dict[str, Any]):
         self.handlers = handlers
 
-    def __bool__(self) -> bool:
-        """Return True if there are any active handlers, False otherwise."""
+    def __bool__(self):
+        """Return True if there are handlers, False otherwise."""
         return bool(self.handlers)
 
     def __getattr__(self, name):
@@ -71,7 +71,7 @@ def init_tracking(tracker_name: SUPPORTED_TRACKERS_TYPE, **kwargs):
         handler_class = LocalCallbackHandler
 
     elif tracker_name == "agentops":
-        from agentops.partners.langchain_callback_handler import (
+        from agentops.integration.callbacks.langchain import (
             LangchainCallbackHandler,
         )
 

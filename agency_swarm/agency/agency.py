@@ -19,6 +19,7 @@ from typing import (
     TypeVar,
 )
 
+from dotenv import load_dotenv
 from openai.lib._parsing._completions import type_to_response_format_param
 from openai.types.responses.file_search_tool import FileSearchTool
 from openai.types.responses.file_search_tool_param import FileSearchToolParam
@@ -42,9 +43,22 @@ from agency_swarm.util.streaming import (
 )
 from agency_swarm.util.tracking.tracking_manager import TrackingManager
 
-logger = logging.getLogger(__name__)
+load_dotenv(".env")
+
 console = Console()
 T = TypeVar("T", bound=BaseModel)
+
+logger = logging.getLogger(__name__)
+
+
+class SettingsCallbacks(TypedDict):
+    load: Callable[[], List[Dict]]
+    save: Callable[[List[Dict]], Any]
+
+
+class ThreadsCallbacks(TypedDict):
+    load: Callable[[], Dict]
+    save: Callable[[Dict], Any]
 
 
 class Agency:
@@ -110,21 +124,22 @@ class Agency:
         if self.async_mode == "threading":
             from agency_swarm.tools.send_message import SendMessageAsyncThreading
 
-            warnings.warn(
-                "'threading' mode is deprecated. Please use send_message_tool_class = SendMessageAsyncThreading for async communication.",
-                DeprecationWarning,
-                stacklevel=2,
+            logger.warning(
+                "'threading' mode is deprecated. Please use send_message_tool_class = SendMessageAsyncThreading to use async communication."
             )
             self.send_message_tool_class = SendMessageAsyncThreading
         elif self.async_mode == "tools_threading":
             Thread.async_mode = "tools_threading"
-            warnings.warn(
-                "'tools_threading' mode is deprecated. Use tool.ToolConfig.async_mode = 'threading' instead.",
-                DeprecationWarning,
-                stacklevel=2,
+            logger.warning(
+                "'tools_threading' mode is deprecated. Use tool.ToolConfig.async_mode = 'threading' instead."
+            )
+        elif self.async_mode is None:
+            pass
+        else:
+            raise Exception(
+                "Please select async_mode = 'threading' or 'tools_threading'."
             )
 
-        # Read shared instructions
         if os.path.isfile(
             os.path.join(self._get_class_folder_path(), shared_instructions)
         ):
@@ -688,10 +703,10 @@ class Agency:
                                 recipient_agent.file_search.file_ids.append(file.id)
 
                             message_file_names.append(file.filename)
-                            print(f"Uploaded file ID: {file.id}")
+                            logger.info(f"Uploaded file ID: {file.id}")
                         return attachments
                     except Exception as e:
-                        print(f"Error: {e}")
+                        logger.error(f"Error: {e}", exc_info=True)
                         return str(e)
                     finally:
                         uploading_files = False
@@ -714,6 +729,42 @@ class Agency:
                     [a.get("file_id") for a in attachments if a.get("file_id")],
                     recipient_agent,
                 )
+
+                # Check if attachments contain file search or code interpreter types
+                def check_and_add_tools_in_attachments(attachments, recipient_agent):
+                    for attachment in attachments:
+                        for tool in attachment.get("tools", []):
+                            if tool["type"] == "file_search":
+                                if not any(
+                                    isinstance(t, FileSearch)
+                                    for t in recipient_agent.tools
+                                ):
+                                    # Add FileSearch tool if it does not exist
+                                    recipient_agent.tools.append(FileSearch)
+                                    recipient_agent.client.beta.assistants.update(
+                                        recipient_agent.id,
+                                        tools=recipient_agent.get_oai_tools(),
+                                    )
+                                    logger.info(
+                                        "Added FileSearch tool to recipient agent to analyze the file."
+                                    )
+                            elif tool["type"] == "code_interpreter":
+                                if not any(
+                                    isinstance(t, CodeInterpreter)
+                                    for t in recipient_agent.tools
+                                ):
+                                    # Add CodeInterpreter tool if it does not exist
+                                    recipient_agent.tools.append(CodeInterpreter)
+                                    recipient_agent.client.beta.assistants.update(
+                                        recipient_agent.id,
+                                        tools=recipient_agent.get_oai_tools(),
+                                    )
+                                    logger.info(
+                                        "Added CodeInterpreter tool to recipient agent to analyze the file."
+                                    )
+                    return None
+
+                check_and_add_tools_in_attachments(attachments, recipient_agent)
 
                 if history is None:
                     history = []
@@ -770,8 +821,8 @@ class Agency:
                         ),
                     )
 
-                print("Message files: ", attachments)
-                print("Images: ", images)
+                logger.info(f"Message files: {attachments}")
+                logger.info(f"Images: {images}")
 
                 if images and len(images) > 0:
                     original_message = [
@@ -860,6 +911,14 @@ class Agency:
             # Enable queuing for streaming intermediate outputs
             demo.queue(default_concurrency_limit=10)
 
+            # Workaround for bug caused by mcp tool usage
+            # TODO: Find the root cause and fix it
+            if hasattr(demo, "_queue"):
+                if getattr(demo._queue, "pending_message_lock", None) is None:
+                    demo._queue.pending_message_lock = asyncio.Lock()
+                if getattr(demo._queue, "delete_lock", None) is None:
+                    demo._queue.delete_lock = asyncio.Lock()
+
         # Launch the demo
         demo.launch(**kwargs)
         return demo
@@ -875,7 +934,7 @@ class Agency:
             try:
                 import pyreadline as readline
             except ImportError:
-                print(
+                logger.warning(
                     "Module 'readline' not found. Autocomplete will not work. If you are using Windows, try installing 'pyreadline3'."
                 )
                 return
@@ -901,8 +960,9 @@ class Agency:
             readline.set_completer(recipient_agent_completer)
             readline.parse_and_bind("tab: complete")
         except Exception as e:
-            print(
-                f"Error setting up autocomplete for agents in terminal: {e}. Autocomplete will not work."
+            logger.error(
+                f"Error setting up autocomplete for agents in terminal: {e}. Autocomplete will not work.",
+                exc_info=True,
             )
 
     def run_demo(self):
@@ -937,7 +997,9 @@ class Agency:
                     ][0]
                     recipient_agent = self._get_agent_by_name(recipient_agent)
                 except Exception as e:
-                    print(f"Recipient agent {recipient_agent} not found.")
+                    logger.error(
+                        f"Recipient agent {recipient_agent} not found.", exc_info=True
+                    )
                     continue
 
             self.get_completion_stream(
