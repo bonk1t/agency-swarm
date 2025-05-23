@@ -200,7 +200,15 @@ async def main():
     )
     print(result.final_output)
 
-# asyncio.run(main())
+    # Streaming example
+    async for event in agency1.get_response_stream(
+        message="Start the process",
+        recipient_agent="Agent1",
+        chat_id=chat_id,
+    ):
+        print(event)
+
+asyncio.run(main())
 ```
 
 ## Backward Compatibility
