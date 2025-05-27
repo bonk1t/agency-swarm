@@ -33,7 +33,7 @@ from agents.run import DEFAULT_MAX_TURNS
 from agents.stream_events import RunItemStreamEvent
 from agents.strict_schema import ensure_strict_json_schema
 from agents.tool import FunctionTool
-from openai import AsyncOpenAI, NotFoundError
+from openai import OpenAI, AsyncOpenAI, NotFoundError
 from openai.types.responses import ResponseFileSearchToolCall, ResponseFunctionToolCall
 
 from .context import MasterContext
@@ -116,6 +116,7 @@ class Agent(BaseAgent[MasterContext]):
     files_folder_path: Path | None = None
     _subagents: dict[str, "Agent"]
     _openai_client: AsyncOpenAI | None = None
+    _openai_client_sync: OpenAI | None = None
 
     # --- SDK Agent Compatibility ---
     # Re-declare attributes from BaseAgent for clarity and potential overrides
@@ -308,6 +309,8 @@ class Agent(BaseAgent[MasterContext]):
 
         # --- Internal State Init ---
         self._openai_client = None
+        # Needed for file operations
+        self._openai_client_sync = OpenAI()
         self._subagents = {}
         # _thread_manager and _agency_instance are injected by Agency
 
@@ -319,8 +322,7 @@ class Agent(BaseAgent[MasterContext]):
     @property
     def client(self) -> AsyncOpenAI:
         """Provides access to an initialized AsyncOpenAI client instance."""
-        # Consider making client management more robust if needed
-        if not hasattr(self, "_openai_client"):
+        if not hasattr(self, "_openai_client") or self._openai_client is None:
             self._openai_client = AsyncOpenAI()
         return self._openai_client
 
@@ -481,36 +483,74 @@ class Agent(BaseAgent[MasterContext]):
         if not self.files_folder:
             return
 
+        folder_path = Path(self.files_folder)
+        if not folder_path.exists():
+            parent = folder_path.parent
+            base_name = folder_path.name
+            # Look for folders like base_name_vs_*
+            candidates = list(parent.glob(f"{base_name}_vs_*"))
+            if candidates:
+                # Use the first match
+                folder_path = candidates[0]
+                self.files_folder = str(folder_path)
+                logger.info(f"Agent {self.name}: Using found vector store folder '{folder_path}' instead of '{base_name}'.")
+            else:
+                # Try resolving relative to the class folder if not absolute
+                if not folder_path.is_absolute():
+                    folder_path = Path(self.get_class_folder_path()).joinpath(self.files_folder)
+                folder_path = folder_path.resolve()
+                if not folder_path.is_dir():
+                    logger.error(f"Files folder '{folder_path}' is not a directory. Skipping...")
+                    return
+
         folder_str = str(self.files_folder)
         base_path_str = folder_str
         # Regex to capture base path and a VS ID that itself starts with 'vs_'
-        vs_id_match = re.search(r"(.+)_vs_(vs_[a-zA-Z0-9_]+)$", folder_str)
+        vs_id_match = re.search(r"(.+)_(vs_[a-zA-Z0-9_]+)$", folder_str)
 
-        if vs_id_match:
-            base_path_str = vs_id_match.group(1)
-            self._associated_vector_store_id = vs_id_match.group(2)
+        if not vs_id_match:
+            folder_name = Path(base_path_str).name
+            openai_vs_name = folder_name
             logger.info(
-                f"Agent {self.name}: Parsed Vector Store ID '{self._associated_vector_store_id}' from files_folder '{folder_str}'. Base path: '{base_path_str}'"
+                f"Agent {self.name}: files_folder '{folder_str}' does not specify a Vector Store ID with '_vs_' suffix. Creating a new Vector Store."
             )
+            created_vs = self._openai_client_sync.vector_stores.create(name=openai_vs_name)
+            vs_id = created_vs.id
+            new_folder_name = f"{folder_name}_{vs_id}"
+            parent_dir = Path(base_path_str).parent
+            new_folder_path = parent_dir / new_folder_name
+            # Rename the folder if it exists and is not already named with the VS id
+            try:
+                if Path(base_path_str).exists() and Path(base_path_str).name != new_folder_name:
+                    Path(base_path_str).rename(new_folder_path)
+                    base_path_str = str(new_folder_path)
+                    logger.info(f"Agent {self.name}: Renamed files folder to {new_folder_path}")
+                elif not Path(base_path_str).exists():
+                    # If the folder does not exist, create it with the new name
+                    new_folder_path.mkdir(parents=True, exist_ok=True)
+                    base_path_str = str(new_folder_path)
+                    logger.info(f"Agent {self.name}: Created files folder {new_folder_path}")
+                else:
+                    # Folder already has the correct name
+                    base_path_str = str(Path(base_path_str).resolve())
+                self._associated_vector_store_id = vs_id
+            except Exception as e:
+                logger.error(f"Agent {self.name}: Error renaming/creating files_folder to {new_folder_path}: {e}")
+                self.files_folder_path = None
+                return
         else:
-            logger.info(
-                f"Agent {self.name}: files_folder '{folder_str}' does not specify a Vector Store ID with '_vs_' suffix. Local file management only."
-            )
+            self._associated_vector_store_id = vs_id_match.group(2)
 
         self.files_folder_path = Path(base_path_str).resolve()
-        try:
-            self.files_folder_path.mkdir(parents=True, exist_ok=True)
-            logger.info(f"Agent {self.name}: Ensured local files folder exists at {self.files_folder_path}")
-        except OSError as e:
-            logger.error(f"Agent {self.name}: Error creating files_folder at {self.files_folder_path}: {e}")
-            self.files_folder_path = None
-            if self._associated_vector_store_id:
-                self._associated_vector_store_id = None  # Invalidate if folder creation fails
-            return
+
+        for file in os.listdir(self.files_folder_path):
+            self.upload_file(os.path.join(self.files_folder_path, file))
 
         # Add FileSearchTool tentatively if VS ID is parsed. Actual VS check is async.
         if self._associated_vector_store_id:
             self._ensure_file_search_tool()  # This method is synchronous
+        else:
+            logger.error(f"Agent {self.name}: No associated vector store ID; FileSearchTool setup skipped.")
 
     async def _init_file_handling(self) -> None:
         """
@@ -569,9 +609,9 @@ class Agent(BaseAgent[MasterContext]):
 
         if not file_search_tool_exists:
             logger.info(
-                f"Agent {self.name}: Adding FileSearchTool as vector store ID '{self._associated_vector_store_id}' is associated."
+                f"Agent {self.name}: Adding FileSearchTool with vector store ID: '{self._associated_vector_store_id}'"
             )
-            self.add_tool(FileSearchTool(vector_store_ids=[self._associated_vector_store_id]))
+            self.add_tool(FileSearchTool(vector_store_ids=[self._associated_vector_store_id], include_search_results=True))
         else:
             for tool in self.tools:
                 if isinstance(tool, FileSearchTool):
@@ -587,7 +627,7 @@ class Agent(BaseAgent[MasterContext]):
                         )
                     break  # Assume only one FileSearchTool
 
-    async def upload_file(self, file_path: str) -> str:
+    def upload_file(self, file_path: str) -> str:
         """
         Uploads a file to OpenAI and optionally associates it with the agent's
         Vector Store if `self._associated_vector_store_id` is set (derived from
@@ -619,17 +659,16 @@ class Agent(BaseAgent[MasterContext]):
                 f"Agent {self.name}: Cannot upload file. Agent_files_folder_path is not set. Please initialize the agent with a valid 'files_folder'."
             )
 
-        # Check if a version of this file (with an ID) already exists locally
-        # This is a simple check; more robust would involve checking remote file IDs if available
-        # For now, local name check prevents re-upload if local copy with ID exists.
-        existing_file_id = await self.check_file_exists(fpath.name)
+        # Check if file has already been uploaded
+        existing_file_id = self.get_id_from_file(fpath)
+        logger.info(f"Existing file ID: {existing_file_id}")
         if existing_file_id:
-            logger.info(f"File {fpath.name} with ID {existing_file_id} already exists locally. Skipping upload.")
+            logger.info(f"File {fpath.name} with ID {existing_file_id} is already uploaded, skipping...")
             return existing_file_id
 
         try:
             with open(fpath, "rb") as f:
-                uploaded_file = await self.client.files.create(file=f, purpose="assistants")
+                uploaded_file = self._openai_client_sync.files.create(file=f, purpose="assistants")
             logger.info(
                 f"Agent {self.name}: Successfully uploaded file {fpath.name} to OpenAI. File ID: {uploaded_file.id}"
             )
@@ -637,25 +676,25 @@ class Agent(BaseAgent[MasterContext]):
             logger.error(f"Agent {self.name}: Failed to upload file {fpath.name} to OpenAI: {e}")
             raise AgentsException(f"Failed to upload file {fpath.name} to OpenAI: {e}") from e
 
-        # Copy to agent's files_folder_path and rename with OpenAI ID
+        # Rename the original file to include the OpenAI ID instead of copying
         try:
             new_filename = f"{fpath.stem}_{uploaded_file.id}{fpath.suffix}"
             destination_path = self.files_folder_path / new_filename
-            shutil.copy(fpath, destination_path)
-            logger.info(f"Agent {self.name}: Copied uploaded file to {destination_path}")
+            fpath.rename(destination_path)
+            logger.info(f"Agent {self.name}: Renamed uploaded file to {destination_path}")
         except Exception as e:
             logger.warning(
-                f"Agent {self.name}: Failed to copy file {fpath.name} to {self.files_folder_path}. File ID: {uploaded_file.id}. Error: {e}"
+                f"Agent {self.name}: Failed to rename file {fpath.name} to {destination_path}: {e}"
             )
             # Not raising an exception here as the file is uploaded to OpenAI,
-            # but local copy failed. The File ID is still returned.
+            # but local rename failed. The File ID is still returned.
 
         # Associate with Vector Store if one is linked to this agent via files_folder
         if self._associated_vector_store_id:
             try:
                 # First, check if the vector store still exists.
                 try:
-                    await self.client.vector_stores.retrieve(vector_store_id=self._associated_vector_store_id)
+                    self._openai_client_sync.vector_stores.retrieve(vector_store_id=self._associated_vector_store_id)
                     logger.debug(
                         f"Agent {self.name}: Confirmed Vector Store {self._associated_vector_store_id} exists before associating file {uploaded_file.id}."
                     )
@@ -667,7 +706,7 @@ class Agent(BaseAgent[MasterContext]):
                     return uploaded_file.id  # File is uploaded, but association is skipped. Early exit.
 
                 # If VS exists, proceed to associate the file
-                await self.client.vector_stores.files.create(
+                self._openai_client_sync.vector_stores.files.create(
                     vector_store_id=self._associated_vector_store_id, file_id=uploaded_file.id
                 )
                 logger.info(
@@ -681,41 +720,18 @@ class Agent(BaseAgent[MasterContext]):
 
         return uploaded_file.id
 
-    async def check_file_exists(self, file_name_or_path: str) -> str | None:
-        """
-        Checks if a file with a given original name (or full path) likely exists
-        as an uploaded file in the agent's local `files_folder_path` by looking
-        for a version of it with an appended OpenAI File ID.
-
-        Args:
-            file_name_or_path (str): The original name of the file (e.g., 'document.pdf')
-                                     or the full path to the original file.
-
-        Returns:
-            str | None: The OpenAI File ID if a matching file is found, otherwise None.
-        """
-        if not self.files_folder_path:
-            return None
-
-        original_path = Path(file_name_or_path)
-        original_stem = original_path.stem
-        original_suffix = original_path.suffix
-
-        # Search for files in files_folder_path that match the pattern: original_stem_file-ID.original_suffix
-        # Example: document_file-abc123xyz.pdf
-        # OpenAI File IDs usually start with 'file-'
-        pattern = re.compile(f"^{re.escape(original_stem)}_(file-[a-zA-Z0-9]+){re.escape(original_suffix)}$")
-
-        for f_path in self.files_folder_path.iterdir():
-            if f_path.is_file():
-                match = pattern.match(f_path.name)
-                if match:
-                    file_id = match.group(1)
-                    logger.debug(
-                        f"Found existing file {f_path.name} with ID {file_id} for original name {file_name_or_path}"
-                    )
-                    return file_id
-            return None
+    def get_id_from_file(self, f_path):
+        """Get file id from file name"""
+        if os.path.isfile(f_path):
+            file_name, file_ext = os.path.splitext(f_path)
+            file_name = os.path.basename(file_name)
+            file_name = file_name.split("_")
+            if len(file_name) > 1:
+                return file_name[-1] if "file-" in file_name[-1] else None
+            else:
+                return None
+        else:
+            raise FileNotFoundError(f"File not found: {f_path}")
 
     # --- Core Execution Methods ---
     async def get_response(
@@ -1087,7 +1103,10 @@ class Agent(BaseAgent[MasterContext]):
                     tool_call_id_for_array = getattr(raw, "id", None)
                     func_name = "FileSearch"  # Per agents.FileSearchTool.name
                     try:
-                        func_args_str = json.dumps({"queries": getattr(raw, "queries", [])})
+                        func_args_str = json.dumps({
+                            "queries": getattr(raw, "queries", []),
+                            "results": [r.dict() for r in getattr(raw, "results", [])]
+                        })
                     except TypeError as e:
                         logger.error(
                             f"Could not serialize queries for FileSearch: {getattr(raw, 'queries', [])}. Error: {e}"
@@ -1274,6 +1293,18 @@ class Agent(BaseAgent[MasterContext]):
         )
 
     def _get_class_folder_path(self):
+        try:
+            # First, try to use the __file__ attribute of the module
+            return os.path.abspath(os.path.dirname(self.__module__.__file__))
+        except (TypeError, OSError, AttributeError) as e:
+            # If that fails, fall back to inspect
+            try:
+                class_file = inspect.getfile(self.__class__)
+            except (TypeError, OSError, AttributeError) as e:
+                return "./"
+            return os.path.abspath(os.path.realpath(os.path.dirname(class_file)))
+
+    def get_class_folder_path(self):
         try:
             # First, try to use the __file__ attribute of the module
             return os.path.abspath(os.path.dirname(self.__module__.__file__))
