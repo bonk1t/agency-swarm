@@ -36,7 +36,7 @@ Provide concrete steps for users to follow.
         *   Functionality related to `id` and OpenAPI schemas (`schemas_*`, `api_*`) is removed. Files should be managed via `files_folder` and `upload_file`. Validation is handled via the `response_validator` parameter (Note: Future integration with SDK `OutputGuardrail`s is planned).
     *   Replace `BaseTool`-based tool definitions with SDK `FunctionTool` or other `Tool` subclasses (See Tool Conversion section). **Note:** The `agency_swarm.tools.BaseTool` class itself has been removed.
     *   Remove direct calls to Assistants API client methods.
-    *   Implement file handling using `self.upload_file`, `self.check_file_exists` if needed.
+    *   Implement file handling using `self.upload_file`, if needed.
 3.  **Agency Class Changes:**
     *   Replace `Agency` initialization.
     *   **Use the new initialization pattern (Recommended):**
@@ -213,9 +213,9 @@ asyncio.run(main())
 
 ## Backward Compatibility
 
-Explain the deprecated `agency.get_completion()` and `agency.get_completion_stream()` methods.
+`agency.get_completion()` and `agency.get_completion_stream()` are being deprecated.
 These methods are now wrappers around the new `get_response`/`get_response_stream` methods.
-It is recommended to update your code to use the new methods for full functionality and clarity.
+It is recommended to update your code to use the new methods directly for full functionality and clarity.
 
 ## New Features & Capabilities
 

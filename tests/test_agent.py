@@ -15,7 +15,7 @@ from openai.types.responses import ResponseOutputMessage, ResponseOutputText
 from pydantic import BaseModel, ValidationError
 
 from agency_swarm import Agency, Agent
-from agency_swarm.agent import SEND_MESSAGE_TOOL_PREFIX, FileSearchTool
+from agency_swarm.agent import SEND_MESSAGE_TOOL_PREFIX
 from agency_swarm.context import MasterContext
 from agency_swarm.thread import ConversationThread, ThreadManager
 

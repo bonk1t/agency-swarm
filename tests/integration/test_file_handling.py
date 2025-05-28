@@ -250,7 +250,7 @@ async def test_file_search_tool(real_openai_client: AsyncOpenAI, tmp_path: Path)
         # Cleanup: Delete uploaded file from OpenAI and temp directory
         try:
             for file in folder_path.glob("*"):
-                file_id = file_search_agent.get_id_from_file(file)
+                file_id = file_search_agent.file_manager.get_id_from_file(file)
                 if file_id:
                     await real_openai_client.files.delete(file_id=file_id)
                     print(f"Cleaned up file {file.name}")
@@ -325,7 +325,7 @@ async def test_code_interpreter_tool(real_openai_client: AsyncOpenAI, tmp_path: 
         # Cleanup: Delete uploaded file from OpenAI and temp directory
         try:
             for file in folder_path.glob("*"):
-                file_id = code_interpreter_agent.get_id_from_file(file)
+                file_id = code_interpreter_agent.file_manager.get_id_from_file(file)
                 if file_id:
                     await real_openai_client.files.delete(file_id=file_id)
                     print(f"Cleaned up file {file.name}")
@@ -432,3 +432,6 @@ async def test_agent_vision_capabilities(real_openai_client: AsyncOpenAI, tmp_pa
             f"No tool calls should be found for {image_path.name} since OpenAI automatically processes vision. "
             f"The presence of tool calls suggests the implementation is incorrectly trying to use custom tools."
         )
+
+if __name__ == "__main__":
+    pytest.main(["-svk", "test_code_interpreter_tool"])
