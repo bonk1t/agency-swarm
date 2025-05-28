@@ -1,20 +1,14 @@
-import asyncio
 import base64
-import json
 import os
 import shutil
 import uuid
 from pathlib import Path
-from unittest.mock import MagicMock
 
 import pytest
-from agents import ModelSettings, RunContextWrapper, ToolCallItem, ToolCallOutputItem, function_tool
+from agents import ModelSettings, ToolCallItem
 from openai import AsyncOpenAI
-from openai.types.responses import ResponseFileSearchToolCall
 
 from agency_swarm import Agency, Agent
-from agency_swarm.agent import FileSearchTool
-from agency_swarm.thread import ConversationThread, ThreadManager
 
 # Ensure API key is available for tests that make real calls
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
@@ -52,7 +46,10 @@ async def test_agent_processes_message_files_attachment(real_openai_client: Asyn
     # OpenAI will automatically process the attached file and make content available to the LLM
     attachment_tester_agent = Agent(
         name="AttachmentTesterAgentReal",
-        instructions="You are a helpful assistant. When files are attached, you can read their content directly. Answer questions about the file content accurately.",
+        instructions=(
+            "You are a helpful assistant. When files are attached, you can read their content directly. "
+            "Answer questions about the file content accurately."
+        ),
         model_settings=ModelSettings(temperature=0.0),
     )
     attachment_tester_agent._openai_client = real_openai_client
@@ -200,17 +197,9 @@ async def test_multi_file_type_processing(real_openai_client: AsyncOpenAI, tmp_p
 @pytest.mark.asyncio
 async def test_file_search_tool(real_openai_client: AsyncOpenAI, tmp_path: Path):
     """
-    Tests that an agent can process PDF files automatically via OpenAI's Responses API file processing.
-
-    NOTE: The OpenAI Responses API with input_file type only supports PDF files for direct attachment.
-    Other file types (TXT, CSV, images) are supported through different mechanisms:
-    - Vector Stores/File Search (for RAG functionality)
-    - Code Interpreter (for code execution with files)
-
-    This test focuses on the direct file attachment capability which is PDF-only.
-    Uses the existing rich test PDF from the v0.X test suite.
+    Tests that an agent can use FileSearch tool to process files.
     """
-    # Use the existing rich test PDF with secret phrase
+    # Use the test txt file
     test_pdf_path = Path("tests/data/files/favorite_books.txt")
     assert test_pdf_path.exists(), f"Test PDF not found at {test_pdf_path}"
 
@@ -222,7 +211,7 @@ async def test_file_search_tool(real_openai_client: AsyncOpenAI, tmp_path: Path)
 
     try:
         # Create an agent WITHOUT custom file processing tools
-        # OpenAI will automatically process PDF files and make content available
+        # Library will automatically add FileSearch tool
         file_search_agent = Agent(
             name="FileSearchAgent",
             instructions="""You are an agent that can read and analyze text files.""",
@@ -246,10 +235,8 @@ async def test_file_search_tool(real_openai_client: AsyncOpenAI, tmp_path: Path)
         # Initialize agency for the agent
         agency = Agency(file_search_agent, user_context=None)
 
-        # Test processing the PDF file
         question = "What is the name of the 4th book in the list?"
 
-        # Process the PDF file - OpenAI will automatically make file content available
         chat_id = f"test_file_search_{uuid.uuid4().hex[:8]}"
         response_result = await agency.get_response(question, recipient_agent=file_search_agent, chat_id=chat_id)
 
@@ -264,6 +251,81 @@ async def test_file_search_tool(real_openai_client: AsyncOpenAI, tmp_path: Path)
         try:
             for file in folder_path.glob("*"):
                 file_id = file_search_agent.get_id_from_file(file)
+                if file_id:
+                    await real_openai_client.files.delete(file_id=file_id)
+                    print(f"Cleaned up file {file.name}")
+                os.remove(file)
+            vector_store_id = folder_path.name.split("_vs_")[-1]
+            await real_openai_client.vector_stores.delete(vector_store_id=f"vs_{vector_store_id}")
+            print(f"Cleaned up vector store {folder_path.name}")
+            os.rmdir(folder_path)
+            print(f"Cleaned up folder {folder_path.name}")
+        except Exception as e:
+            print(f"Error cleaning up: {e}, dir: {tmp_dir.glob("*")}")
+
+@requires_openai_api
+@pytest.mark.asyncio
+async def test_code_interpreter_tool(real_openai_client: AsyncOpenAI, tmp_path: Path):
+    """
+    Tests that an agent can read and execute code using CodeInterpreter tool.
+    """
+    test_pdf_path = Path("tests/data/files/test-python.py")
+    assert test_pdf_path.exists(), f"Test PDF not found at {test_pdf_path}"
+
+    tmp_dir = Path("tests/data/files/tmp")
+    os.makedirs(tmp_dir, exist_ok=True)
+    tmp_file_path = tmp_dir / "test-python.py"
+    shutil.copy(test_pdf_path, tmp_file_path)
+
+    try:
+        code_interpreter_agent = Agent(
+            name="CodeInterpreterAgent",
+            instructions="""You are an agent that can read and execute code using CodeInterpreter tool.""",
+            model_settings=ModelSettings(temperature=0.0),
+            files_folder=tmp_dir,
+        )
+        code_interpreter_agent._openai_client = real_openai_client
+
+        parent = tmp_dir.parent
+        base_name = tmp_dir.name
+        # Look for folders like base_name_vs_*
+        candidates = list(parent.glob(f"{base_name}_vs_*"))
+        if candidates:
+            # Use the first match
+            folder_path = candidates[0]
+        else:
+            folder_path = ""
+
+        assert folder_path != "", "No vector store folder found"
+
+        # Initialize agency for the agent
+        agency = Agency(code_interpreter_agent, user_context=None)
+
+        # Test the simple usage of the code interpreter tool (answer is always 37)
+        question = """
+        Use CodeInterpreter tool to execute this script and tell me the results:
+        ```import random\nrandom.seed(115)\nprint(random.randint(1, 100))```
+        """
+
+        chat_id = f"test_code_interpreter_{uuid.uuid4().hex[:8]}"
+        response_result = await agency.get_response(question, recipient_agent=code_interpreter_agent, chat_id=chat_id)
+
+        # Verify response
+        assert response_result is not None
+        assert "37" in response_result.final_output.lower()
+
+        # Execute python script (answer is always 14910)
+        query = "Run test-python script, return me its results and tell me exactly what you did to get them."
+        response_result = await agency.get_response(query, recipient_agent=code_interpreter_agent, chat_id=chat_id)
+
+        assert response_result is not None
+        assert "14910" in response_result.final_output.lower()
+
+    finally:
+        # Cleanup: Delete uploaded file from OpenAI and temp directory
+        try:
+            for file in folder_path.glob("*"):
+                file_id = code_interpreter_agent.get_id_from_file(file)
                 if file_id:
                     await real_openai_client.files.delete(file_id=file_id)
                     print(f"Cleaned up file {file.name}")
@@ -370,6 +432,3 @@ async def test_agent_vision_capabilities(real_openai_client: AsyncOpenAI, tmp_pa
             f"No tool calls should be found for {image_path.name} since OpenAI automatically processes vision. "
             f"The presence of tool calls suggests the implementation is incorrectly trying to use custom tools."
         )
-
-if __name__ == "__main__":
-    pytest.main(["-svk", "test_rag_with_filesearchtool_and_real_vs"])

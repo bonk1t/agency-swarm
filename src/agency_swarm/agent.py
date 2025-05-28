@@ -13,6 +13,7 @@ from typing import Any, TypeVar
 
 from agents import (
     Agent as BaseAgent,
+    CodeInterpreterTool,
     FileSearchTool,
     RunConfig,
     RunHooks,
@@ -33,8 +34,9 @@ from agents.run import DEFAULT_MAX_TURNS
 from agents.stream_events import RunItemStreamEvent
 from agents.strict_schema import ensure_strict_json_schema
 from agents.tool import FunctionTool
-from openai import OpenAI, AsyncOpenAI, NotFoundError
+from openai import AsyncOpenAI, NotFoundError, OpenAI
 from openai.types.responses import ResponseFileSearchToolCall, ResponseFunctionToolCall
+from openai.types.responses.tool_param import CodeInterpreter
 
 from .context import MasterContext
 from .thread import ThreadManager
@@ -543,14 +545,30 @@ class Agent(BaseAgent[MasterContext]):
 
         self.files_folder_path = Path(base_path_str).resolve()
 
+        code_interpreter_file_ids = []
+
+        code_interpreter_file_extensions = [
+            ".c", ".cs", ".cpp", ".html", ".java",
+            ".php", ".py", ".rb", ".tex", ".css",
+            ".js", ".sh", ".ts", ".csv", ".pkl",
+            ".tar", ".xlsx", ".xml", ".zip"
+        ]
+
         for file in os.listdir(self.files_folder_path):
-            self.upload_file(os.path.join(self.files_folder_path, file))
+            if Path(file).suffix.lower() in code_interpreter_file_extensions:
+                file_id = self.upload_file(os.path.join(self.files_folder_path, file), include_in_vector_store=False)
+                code_interpreter_file_ids.append(file_id)
+            else:
+                self.upload_file(os.path.join(self.files_folder_path, file))
 
         # Add FileSearchTool tentatively if VS ID is parsed. Actual VS check is async.
         if self._associated_vector_store_id:
             self._ensure_file_search_tool()  # This method is synchronous
         else:
             logger.error(f"Agent {self.name}: No associated vector store ID; FileSearchTool setup skipped.")
+
+        if code_interpreter_file_ids:
+            self._ensure_code_interpreter_tool(code_interpreter_file_ids)
 
     async def _init_file_handling(self) -> None:
         """
@@ -598,7 +616,7 @@ class Agent(BaseAgent[MasterContext]):
         Ensures that a FileSearchTool is available and configured if the agent
         has an associated Vector Store ID (`self._associated_vector_store_id`).
 
-        If the tool is not present, it's added. If present but not configured with
+        If the tool is not present, it will be added. If present but not configured with
         the agent's Vector Store ID, the ID is added to its configuration.
         """
         if not self._associated_vector_store_id:
@@ -627,7 +645,47 @@ class Agent(BaseAgent[MasterContext]):
                         )
                     break  # Assume only one FileSearchTool
 
-    def upload_file(self, file_path: str) -> str:
+    def _ensure_code_interpreter_tool(self, code_interpreter_file_ids: list[str]):
+        """
+        Ensures that a CodeInterpreterTool is available and configured.
+
+        If the tool is not present, it will be added. If present but not configured with
+        the agent's Vector Store ID, the ID is added to its configuration.
+        """
+
+        code_interpreter_tool_exists = any(isinstance(tool, CodeInterpreterTool) for tool in self.tools)
+
+        if not code_interpreter_tool_exists:
+            logger.info(
+                f"Agent {self.name}: Adding CodeInterpreterTool"
+            )
+            self.add_tool(CodeInterpreterTool(
+                tool_config=CodeInterpreter(
+                    container={
+                        "type": "auto",
+                        "file_ids": code_interpreter_file_ids
+                    },
+                    type="code_interpreter"
+                )
+            ))
+        else:
+            for tool in self.tools:
+                if isinstance(tool, CodeInterpreterTool):
+                    if isinstance(tool.tool_config.get("container", ""), str):
+                        logger.warning(
+                            f"Agent {self.name}: Cannot add files to container for code interpreter, "\
+                            "add them manually or switch to using id list."
+                        )
+                    elif code_interpreter_file_ids:
+                        existing_file_ids = tool.tool_config.container.get("file_ids", [])
+                        existing_file_ids.extend(code_interpreter_file_ids)
+                        tool.tool_config.container["file_ids"] = existing_file_ids
+                        logger.info(
+                            f"Agent {self.name}: Added vector store ID '{self._associated_vector_store_id}' to existing CodeInterpreter."
+                        )
+                    break  # Assume only one CodeInterpreterTool
+
+    def upload_file(self, file_path: str, include_in_vector_store: bool = True) -> str:
         """
         Uploads a file to OpenAI and optionally associates it with the agent's
         Vector Store if `self._associated_vector_store_id` is set (derived from
@@ -639,7 +697,7 @@ class Agent(BaseAgent[MasterContext]):
 
         Args:
             file_path (str): The path to the local file to upload.
-
+            include_in_vector_store (bool): Whether to associate the file with the agent's Vector Store.
         Returns:
             str: The OpenAI File ID of the uploaded file.
 
@@ -690,7 +748,7 @@ class Agent(BaseAgent[MasterContext]):
             # but local rename failed. The File ID is still returned.
 
         # Associate with Vector Store if one is linked to this agent via files_folder
-        if self._associated_vector_store_id:
+        if self._associated_vector_store_id and include_in_vector_store:
             try:
                 # First, check if the vector store still exists.
                 try:
