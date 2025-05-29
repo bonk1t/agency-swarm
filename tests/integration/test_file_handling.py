@@ -55,7 +55,7 @@ async def test_agent_processes_message_files_attachment(real_openai_client: Asyn
     attachment_tester_agent._openai_client = real_openai_client
 
     # 3. Setup a minimal real Agency and ThreadManager for agent.get_response()
-    agency = Agency(attachment_tester_agent, user_context=None)
+    Agency(attachment_tester_agent, user_context=None)
     thread_manager = attachment_tester_agent._thread_manager
     assert thread_manager is not None, "ThreadManager not set by Agency"
 
@@ -146,7 +146,7 @@ async def test_multi_file_type_processing(real_openai_client: AsyncOpenAI, tmp_p
         file_processor_agent._openai_client = real_openai_client
 
         # Initialize agency for the agent
-        agency = Agency(file_processor_agent, user_context=None)
+        Agency(file_processor_agent, user_context=None)
 
         # Test processing the PDF file
         question = "What secret phrase do you find in this PDF file?"
@@ -374,7 +374,7 @@ async def test_agent_vision_capabilities(real_openai_client: AsyncOpenAI, tmp_pa
     vision_agent._openai_client = real_openai_client
 
     # Initialize agency for the agent
-    agency = Agency(vision_agent, user_context=None)
+    Agency(vision_agent, user_context=None)
 
     # Test processing each image
     for image_path, question, expected_content in test_images:
