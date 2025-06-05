@@ -39,7 +39,7 @@ In this example, `CustomerSupportAgent` checks the response for the presence of 
 
 #### Validation Attempts
 
-The `validation_attempts` parameter controls how many times an agent can retry when validation fails. **Default is 1** (one attempt, no retries). Set `validation_attempts=0` for immediate fail-fast behavior.
+The `validation_attempts` parameter controls how many times an agent can retry when validation fails. **Default is 1** (one retry). Set `validation_attempts=0` for immediate fail-fast behavior.
 
 ```python
 from agency_swarm import Agent
