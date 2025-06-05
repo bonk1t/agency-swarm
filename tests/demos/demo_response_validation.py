@@ -173,7 +173,13 @@ def test_multiple_retry_attempts(results: ValidationTestResults):
     """Test multiple validation retry attempts."""
     print("\n🧪 Test 4: Multiple Retry Attempts")
 
+    attempt_counter = {"count": 0}
+
     def format_validator(message: str) -> str:
+        """Require 'GREETING:' prefix and fail first attempt to exercise retries."""
+        attempt_counter["count"] += 1
+        if attempt_counter["count"] == 1:
+            raise ValueError("Intentional failure to demonstrate retry logic")
         if not message.upper().startswith("GREETING:"):
             raise ValueError("Response must start with 'GREETING:' followed by your message")
         return message
