@@ -6,23 +6,18 @@ icon: "book"
 
 Agency Swarm v1.x introduces significant changes to the API, including some breaking changes.
 
-This page provides a guide highlighting the most important changes to help you migrate your code from Agency Swarm v0.x to v1.x.
+This page highlights the key improvements and how to migrate your code from Agency Swarm v0.x to v1.x.
 
-## Install Agency Swarm v1.x
+## New Features & Capabilities
 
-Agency Swarm v1.x is currently in **beta preview**. v0.x remains the **recommended production version** until we reach feature parity and mark v1.0 as generally available.
+v1.x introduces several improvements:
 
-You can install Agency Swarm v1.x beta from PyPI:
-
-```bash
-pip install -U "agency-swarm>=1.0.0-beta.1"
-```
-
-<Warning>
-v1.x is currently in beta. We recommend using v0.x for production applications until v1.0 reaches general availability.
-</Warning>
-
-If you encounter any issues, please create an issue in GitHub using the **v1.x beta** label. This will help us actively monitor and track errors, and continue to improve the library's performance.
+- **Better Control**: More granular execution control via `agents.Runner`
+- **Flexible Persistence**: Custom conversation history management
+- **Clearer Communication**: Explicit agent-to-agent messaging patterns
+- **SDK Integration**: Leverages OpenAI Agents SDK features and improvements
+- **Structured Outputs**: Native Pydantic model support for agent outputs
+- **Improved Performance**: Optimized execution and state management
 
 ## Continue using Agency Swarm v0.x features
 
@@ -36,7 +31,7 @@ pip install "agency-swarm<1.0.0"
 
 v0.x documentation is available at the current documentation site until v1.0 reaches general availability.
 
-## Critical Breaking Changes
+## Breaking Changes & Compatibility
 
 <Warning>
 **These changes will cause your v0.x code to crash in v1.x and require immediate attention:**
@@ -47,60 +42,14 @@ v0.x documentation is available at the current documentation site until v1.0 rea
 4. **Async-only methods**: `get_response()` and `get_response_stream()` are async and required `await`
 </Warning>
 
-## Quick Migration Checklist
+Agency Swarm v1.x maintains backward compatibility where possible:
 
-<Steps>
-<Step title="Fix Immediate Crashes">
-**Replace `response_format` parameter:**
-```python
-# REMOVE this (will crash):
-agency.get_completion(response_format={"type": "json_schema", ...})
+- **`agency_chart`**: The `agency_chart` parameter in the `Agency` constructor still works but is deprecated. It's recommended to migrate to positional arguments for entry points and the `communication_flows` keyword argument.
+- **`get_completion()`**: This method is maintained as a synchronous wrapper for `get_response()` and works as it did in v0.x. It is deprecated and will be removed in a future version.
+- **`get_completion_stream()`**: This method is **not supported** in v1.x and will raise a `NotImplementedError`. For real-time streaming, you must use the new asynchronous `get_response_stream()` method.
+- **Agent Parameters**: Individual model parameters on `Agent` (like `temperature`) still work but are deprecated. It is recommended to use the `model_settings` parameter with a `ModelSettings` object instead.
+- **`BaseTool`**: The `BaseTool` class is temporarily retained to allow for a gradual migration of your custom tools to the new `@function_tool` decorator format.
 
-# REPLACE with Agent-level output_type:
-agent = Agent(output_type=YourPydanticModel, ...)
-```
-
-**Replace `response_validator` parameter:**
-```python
-# REMOVE this (will be ignored):
-agent = Agent(response_validator=my_validator, ...)
-
-# REPLACE with guardrails:
-agent = Agent(output_guardrails=[my_guardrail], ...)
-```
-</Step>
-
-<Step title="Update Method Names (Optional)">
-```python
-# v0.x and v1.x (backward compatible):
-result = agency.get_completion("Hello")
-
-# v1.x (recommended new pattern):
-result = await agency.get_response("Hello")
-```
-</Step>
-
-<Step title="Update Agency Constructor">
-```python
-# CHANGE from:
-agency = Agency(agency_chart=[agent1, [agent1, agent2]])
-
-# TO:
-agency = Agency(agent1, communication_flows=[(agent1, agent2)])
-```
-</Step>
-
-<Step title="Update Thread Callbacks (if using persistence)">
-```python
-# Your callback implementations stay the same, just parameter names change:
-agency = Agency(
-    agent1,
-    load_threads_callback=lambda: load_threads(chat_id),
-    save_threads_callback=lambda new_threads: save_threads(new_threads)
-)
-```
-</Step>
-</Steps>
 
 ## Why These Changes? (Architectural Context)
 
@@ -368,7 +317,7 @@ asyncio.run(main())
 </Tab>
 </Tabs>
 
-## Step-by-Step Migration
+## Migration Checklist
 
 <Steps>
 <Step title="Update Dependencies">
@@ -569,30 +518,6 @@ agent = Agent(
 
 </Steps>
 
-## Backward Compatibility
-
-Agency Swarm v1.x maintains backward compatibility where possible to ease migration:
-
-- **`agency_chart`**: The `agency_chart` parameter in the `Agency` constructor still works but is deprecated. It's recommended to migrate to positional arguments for entry points and the `communication_flows` keyword argument.
-- **`get_completion()`**: This method is maintained as a synchronous wrapper for `get_response()` and works as it did in v0.x. It is deprecated and will be removed in a future version.
-- **`get_completion_stream()`**: This method is **not supported** in v1.x and will raise a `NotImplementedError`. For real-time streaming, you must use the new asynchronous `get_response_stream()` method.
-- **Agent Parameters**: Individual model parameters on `Agent` (like `temperature`) still work but are deprecated. It is recommended to use the `model_settings` parameter with a `ModelSettings` object instead.
-- **`BaseTool`**: The `BaseTool` class is temporarily retained to allow for a gradual migration of your custom tools to the new `@function_tool` decorator format.
-
-<Note>
-Deprecated features will be removed in a future major version. We recommend migrating to the new patterns for the best experience.
-</Note>
-
-## New Features & Capabilities
-
-v1.x introduces several improvements:
-
-- **Better Control**: More granular execution control via `agents.Runner`
-- **Flexible Persistence**: Custom conversation history management
-- **Clearer Communication**: Explicit agent-to-agent messaging patterns
-- **SDK Integration**: Leverages OpenAI Agents SDK features and improvements
-- **Structured Outputs**: Native Pydantic model support for agent outputs
-- **Improved Performance**: Optimized execution and state management
 
 ## Resources
 
