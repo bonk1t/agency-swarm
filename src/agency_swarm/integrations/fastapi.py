@@ -1,5 +1,5 @@
 import os
-from typing import List
+from typing import Callable, List, Mapping
 
 from agents.tool import FunctionTool
 from dotenv import load_dotenv
@@ -11,7 +11,7 @@ load_dotenv()
 
 
 def run_fastapi(
-    agencies: list[Agency] | None = None,
+    agencies: Mapping[str, Callable[..., Agency]] | list[Agency] | None = None,
     tools: list[type[FunctionTool]] | None = None,
     host: str = "0.0.0.0",
     port: int = 8000,
@@ -21,8 +21,12 @@ def run_fastapi(
 ):
     """
     Launch a FastAPI server exposing endpoints for multiple agencies and tools.
-    Each agency is deployed at /[agency-name]/get_completion and /[agency-name]/get_completion_stream.
-    Each tool is deployed at /tool/[tool-name].
+    ``agencies`` should be a mapping of endpoint names to *factory callables*.
+    Each callable must return a new :class:`Agency` instance and should accept an
+    optional ``load_threads_callback`` argument. The mapping keys become part of
+    the endpoint paths (``/name/get_completion`` and ``/name/get_completion_stream``).
+
+    Tools can be provided as classes and will be served at ``/tool/ToolName``.
     """
     if (agencies is None or len(agencies) == 0) and (tools is None or len(tools) == 0):
         print("No endpoints to deploy. Please provide at least one agency or tool.")
@@ -64,11 +68,21 @@ def run_fastapi(
     agency_names = []
 
     if agencies:
-        for idx, agency in enumerate(agencies):
-            agency_name = getattr(agency, "name", None)
-            if agency_name is None:
-                agency_name = "agency" if len(agencies) == 1 else f"agency_{idx+1}"
-            agency_name = agency_name.replace(" ", "_")
+        agency_factories: dict[str, Callable[..., Agency]] = {}
+
+        if isinstance(agencies, Mapping):
+            agency_factories.update(agencies)
+        else:  # legacy list of instances
+            for idx, agency in enumerate(agencies):
+                if not isinstance(agency, Agency):
+                    raise TypeError("agencies list must contain Agency instances")
+                name = getattr(agency, "name", None)
+                if name is None:
+                    name = "agency" if len(agencies) == 1 else f"agency_{idx + 1}"
+                name = name.replace(" ", "_")
+                agency_factories[name] = lambda a=agency: a
+
+        for agency_name, factory in agency_factories.items():
             if agency_name in agency_names:
                 raise ValueError(
                     f"Agency name {agency_name} is already in use. "
@@ -76,8 +90,8 @@ def run_fastapi(
                 )
             agency_names.append(agency_name)
 
-            # Store agent instances for easy lookup
-            AGENT_INSTANCES: dict[str, Agent] = dict(agency.agents.items())
+            prototype = factory()
+            AGENT_INSTANCES: dict[str, Agent] = dict(prototype.agents.items())
 
             class VerboseRequest(BaseRequest):
                 verbose: bool = False
@@ -87,12 +101,12 @@ def run_fastapi(
 
             app.add_api_route(
                 f"/{agency_name}/get_completion",
-                make_response_endpoint(AgencyRequest, agency, verify_token),
+                make_response_endpoint(AgencyRequest, factory, verify_token),
                 methods=["POST"],
             )
             app.add_api_route(
                 f"/{agency_name}/get_completion_stream",
-                make_stream_endpoint(AgencyRequestStreaming, agency, verify_token),
+                make_stream_endpoint(AgencyRequestStreaming, factory, verify_token),
                 methods=["POST"],
             )
             endpoints.append(f"/{agency_name}/get_completion")

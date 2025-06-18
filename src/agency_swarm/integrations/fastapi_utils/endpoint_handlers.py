@@ -1,11 +1,13 @@
 import asyncio
 import json
+from typing import Callable
 
 from fastapi import Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from agency_swarm.agency import Agency
+from agency_swarm.thread import ConversationThread
 
 
 def get_verify_token(app_token):
@@ -23,11 +25,25 @@ def get_verify_token(app_token):
 
 
 # Non‑streaming completion endpoint
-# TODO: change current agency to callable
-def make_response_endpoint(request_model, current_agency: Agency, verify_token):
+def _instantiate_agency(factory: Callable[..., Agency], history: dict | None) -> Agency:
+    """Create an Agency using the factory with optional thread history."""
+    history_dict = {tid: {"items": th.items, "metadata": th.metadata} for tid, th in (history or {}).items()}
+    try:
+        return factory(load_threads_callback=lambda: history_dict)
+    except TypeError:
+        agency = factory()
+        if history:
+            agency.thread_manager._threads = {
+                tid: ConversationThread(thread_id=tid, items=th.items, metadata=th.metadata)
+                for tid, th in history.items()
+            }
+        return agency
+
+
+def make_response_endpoint(request_model, agency_factory: Callable[..., Agency], verify_token):
     async def handler(request: request_model, token: str = Depends(verify_token)):
-        # TODO: Init agency agency_instance = current_agency()
-        response = await current_agency.get_response(
+        agency_instance = _instantiate_agency(agency_factory, request.chat_history)
+        response = await agency_instance.get_response(
             message=request.message,
             recipient_agent=request.recipient_agent,
             additional_instructions=request.additional_instructions,
@@ -35,20 +51,23 @@ def make_response_endpoint(request_model, current_agency: Agency, verify_token):
             file_ids=request.file_ids,
             attachments=request.attachments,
         )
-        # TODO: extract history
-        # TODO: chat_history = agency_instance.thread_manager._thread
-        return {"response": response.final_output, "chat_history": "history placeholder"}
+        history_data = {
+            tid: {"items": th.items, "metadata": th.metadata}
+            for tid, th in agency_instance.thread_manager._threads.items()
+        }
+        return {"response": response.final_output, "chat_history": history_data}
 
     return handler
 
 
 # Streaming SSE endpoint
-def make_stream_endpoint(request_model, current_agency: Agency, verify_token):
+def make_stream_endpoint(request_model, agency_factory: Callable[..., Agency], verify_token):
     async def handler(request: request_model, token: str = Depends(verify_token)):
-        # TODO: Init agency agency_instance = current_agency()
+        agency_instance = _instantiate_agency(agency_factory, request.chat_history)
+
         async def event_generator():
             try:
-                async for event in current_agency.get_response_stream(
+                async for event in agency_instance.get_response_stream(
                     message=request.message,
                     recipient_agent=request.recipient_agent,
                     additional_instructions=request.additional_instructions,
@@ -56,9 +75,7 @@ def make_stream_endpoint(request_model, current_agency: Agency, verify_token):
                     file_ids=request.file_ids,
                     attachments=request.attachments,
                 ):
-                    print("Yielding event:", event)
                     # Try to serialize the event
-                    # TODO: add chat history to the output
                     try:
                         # If event has a .model_dump() or .dict() method, use it
                         if hasattr(event, "model_dump"):
@@ -74,6 +91,13 @@ def make_stream_endpoint(request_model, current_agency: Agency, verify_token):
                         yield "data: " + json.dumps({"error": f"Failed to serialize event: {e}"}) + "\n\n"
             except Exception as exc:
                 yield "data: " + json.dumps({"error": str(exc)}) + "\n\n"
+            else:
+                # After streaming completes send the final chat history
+                history_data = {
+                    tid: {"items": th.items, "metadata": th.metadata}
+                    for tid, th in agency_instance.thread_manager._threads.items()
+                }
+                yield "data: " + json.dumps({"chat_history": history_data}) + "\n\n"
 
         return StreamingResponse(
             event_generator(),
@@ -93,7 +117,6 @@ def make_tool_endpoint(tool, verify_token, context=None):
     async def handler(request: Request, token: str = Depends(verify_token)):
         try:
             data = await request.json()
-            print("data:", data)
             # If this is a FunctionTool (from @function_tool), use on_invoke_tool
             if hasattr(tool, "on_invoke_tool"):
                 # Ensure 'args' key is present for function tools
@@ -101,7 +124,6 @@ def make_tool_endpoint(tool, verify_token, context=None):
                     input_json = json.dumps({"args": data})
                 else:
                     input_json = json.dumps(data)
-                print("input_json:", input_json)
                 result = await tool.on_invoke_tool(context, input_json)
             elif isinstance(tool, type):
                 tool_instance = tool(**data)

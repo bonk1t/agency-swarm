@@ -109,7 +109,8 @@
               "additional-features/azure-openai",
               "additional-features/open-source-models",
               "additional-features/deployment-to-production",
-              "additional-features/observability"
+              "additional-features/observability",
+              "additional-features/fastapi-integration"
             ]
           },
           {
