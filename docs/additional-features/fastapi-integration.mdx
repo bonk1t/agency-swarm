@@ -43,6 +43,11 @@ run_fastapi(
 Agency endpoints accept parameters such as `message`, `recipient_agent`, `additional_instructions` and `message_files`. You should also pass the previous `chat_history` dictionary (see hooks documentation for the exact format).
 Responses include a `response` field with the agent reply and a `chat_history` field containing the serialized conversation threads. The streaming endpoint sends `chat_history` as the final event once generation is complete.
 
+Streaming events now follow the new naming from the Responses API. If you were
+previously relying on the Assistants API event names, see the
+[Response Stream Event Mapping](./response-stream-event-mapping) table for the
+equivalent event types.
+
 If the environment variable specified by `app_token_env` is set, a bearer token is required for all requests. Otherwise, authentication is disabled.
 
 ### Example: Serving Multiple Agencies and Tools with Factory Functions

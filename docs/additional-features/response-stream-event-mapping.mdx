@@ -1,0 +1,30 @@
+---
+title: "Response Stream Event Mapping"
+description: "Mapping of Assistants API streaming events to the new Responses API event names."
+icon: "arrows-turn-to-dots"
+---
+
+When migrating from the Assistants API to the Responses API, the names of the streaming
+Server‑Sent Events (SSE) changed. The table below summarizes the most common
+correspondence between old `AssistantStreamEvent` types and the new
+`ResponseStreamEvent` types.
+
+| Assistants API Event | Responses API Event |
+| -------------------- | ------------------ |
+| `thread.run.queued` | `response.queued` |
+| `thread.run.created` | `response.created` |
+| `thread.run.in_progress` | `response.in_progress` |
+| `thread.run.requires_action` | Specific `response.*_call` events (e.g. `response.mcp_call.in_progress`) |
+| `thread.run.completed` | `response.completed` |
+| `thread.run.failed` | `response.failed` |
+| `thread.run.cancelled` / `thread.run.expired` / `thread.run.incomplete` | `response.incomplete` |
+| `thread.message.created` | `response.output_item.added` |
+| `thread.message.delta` | `response.output_text.delta` |
+| `thread.message.completed` | `response.output_text.done` + `response.output_item.done` |
+| `thread.run.step.delta` | `response.function_call.arguments_delta` and other tool‑specific events |
+| `thread.run.step.completed` | `response.function_call.arguments_done` or `response.*_call.completed` |
+| `error` | `response.error` |
+
+The Responses API also introduces many additional events for reasoning summaries,
+file search, web search and image generation. See the OpenAI documentation for
+the full list of `ResponseStreamEvent` types.
