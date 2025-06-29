@@ -3,6 +3,7 @@ import inspect
 import json
 import logging
 import os
+import sys
 import warnings
 from collections.abc import AsyncGenerator, Callable
 from pathlib import Path
@@ -1372,11 +1373,11 @@ class Agent(BaseAgent[MasterContext]):
             strict_json_schema=legacy_tool.ToolConfig.strict,
         )
 
-    def _get_class_folder_path(self):
+    def _get_class_folder_path(self) -> str:
         try:
-            # First, try to use the __file__ attribute of the module
-            return os.path.abspath(os.path.dirname(self.__module__.__file__))
-        except (TypeError, OSError, AttributeError):
+            module_file = sys.modules[self.__class__.__module__].__file__
+            return os.path.abspath(os.path.dirname(module_file))
+        except (KeyError, TypeError, OSError, AttributeError):
             # If that fails, fall back to inspect
             try:
                 class_file = inspect.getfile(self.__class__)
@@ -1384,12 +1385,12 @@ class Agent(BaseAgent[MasterContext]):
                 return "./"
             return os.path.abspath(os.path.realpath(os.path.dirname(class_file)))
 
-    def get_class_folder_path(self):
+    def get_class_folder_path(self) -> str:
         """Public method to get the class folder path."""
         try:
-            # First, try to use the __file__ attribute of the module
-            return os.path.abspath(os.path.dirname(self.__module__.__file__))
-        except (TypeError, OSError, AttributeError):
+            module_file = sys.modules[self.__class__.__module__].__file__
+            return os.path.abspath(os.path.dirname(module_file))
+        except (KeyError, TypeError, OSError, AttributeError):
             # If that fails, fall back to inspect
             try:
                 class_file = inspect.getfile(self.__class__)
