@@ -1,4 +1,5 @@
 # --- agency.py ---
+import asyncio
 import concurrent.futures
 import logging
 import warnings
@@ -576,6 +577,7 @@ class Agency:
         port: int = 8000,
         app_token_env: str = "APP_TOKEN",
         cors_origins: list[str] | None = None,
+        enable_agui: bool = False,
     ):
         """Serve this agency via the FastAPI integration.
 
@@ -599,6 +601,7 @@ class Agency:
             port=port,
             app_token_env=app_token_env,
             cors_origins=cors_origins,
+            enable_agui=enable_agui
         )
 
     # --- Deprecated Methods ---
@@ -1118,3 +1121,59 @@ class Agency:
                     positions[agent_name]["y"] = max(node_radius, min(height - node_radius, positions[agent_name]["y"]))
 
         return positions
+
+    def copilot_demo(
+        self,
+        host: str = "0.0.0.0",
+        port: int = 8000,
+        frontend_port: int = 3000,
+        cors_origins: list[str] | None = None,
+    ):
+        """Launch the Copilot UI demo with backend and frontend servers."""
+        # TODO: Refactor into smaller helpers to keep method concise
+        import atexit
+        import shutil
+        import subprocess
+        from pathlib import Path
+
+        from .integrations.fastapi import run_fastapi
+
+        fe_path = Path(__file__).parent / "utils" / "copilot-demo-app"
+
+        # Safety checks – ensure Node.js environment is ready
+        npm_exe = shutil.which("npm") or shutil.which("npm.cmd")
+        if npm_exe is None:
+            raise RuntimeError(
+                "npm was not found on your PATH. Install Node.js (https://nodejs.org) and ensure `npm` is accessible before running `copilot_demo()`."
+            )
+
+        if not (fe_path / "node_modules").exists():
+            print("\033[93m[Copilot Demo] 'node_modules' not found in copilot app directory. Running 'npm install' to install frontend dependencies...\033[0m")
+            try:
+                subprocess.check_call([npm_exe, "install"], cwd=fe_path)
+                print("\033[92m[Copilot Demo] Frontend dependencies installed successfully. Frontend might take a few seconds to load.\033[0m")
+            except subprocess.CalledProcessError as e:
+                raise RuntimeError(
+                    f"Failed to install frontend dependencies in {fe_path}. Please check your npm setup and try again."
+                ) from e
+
+        # Start the frontend
+        proc = subprocess.Popen(
+            [npm_exe, "run", "dev", "--", "-p", str(frontend_port)],
+            cwd=fe_path,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.STDOUT,
+        )
+        # Ensure we clean up on ^C / exit
+        atexit.register(proc.terminate)
+        print(f"\n\033[92;1m🚀  Copilot UI running at http://localhost:{frontend_port}\033[0m\n")
+
+        # Start the backend
+        run_fastapi(
+            agencies={self.name or "agency": lambda **kwargs: self},
+            host=host,
+            port=port,
+            app_token_env="",
+            cors_origins=cors_origins,
+            enable_agui=True
+        )
