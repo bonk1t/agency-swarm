@@ -54,6 +54,7 @@ v0.x documentation is available at the current documentation site until v1.0 rea
 - **Better Validation**: `output_guardrails` and `input_guardrails` replace the old `response_validator` system
 - **Real-time Streaming**: Improved streaming capabilities with async response handling
 
+<Accordion title="Architectural & Persistence Details">
 ## Why These Changes? (Architectural Context)
 
 The migration from v0.x to v1.x represents a fundamental shift in how Agency Swarm operates:
@@ -117,17 +118,7 @@ agency = Agency(
 <Warning>
 **Production Deployment**: Thread callbacks are required in both v0.x and v1.x for production deployment to persist conversation state. The callback signatures remain the same, but the data format changes.
 </Warning>
-
-## Breaking Changes
-
-<Warning>
-**These changes will cause your v0.x code to crash in v1.x and require immediate attention:**
-
-1. **`response_format` parameter**: Now throws `NotImplementedError` - must migrate to Agent-level `output_type`
-2. **`response_validator` parameter**: Completely removed from Agent class - must migrate to `output_guardrails`
-3. **Thread callbacks data format**: Now stores complete conversation histories instead of thread IDs
-4. **Async-only methods**: `get_response()` and `get_response_stream()` are async and required `await`
-</Warning>
+</Accordion>
 
 ## Quick-Migration Checklist
 
@@ -189,6 +180,10 @@ result = await agency.get_response_stream("Hello")
 
 ## Step-by-Step Migration
 
+<Warning>
+The steps below introduce **breaking changes** that must be implemented when migrating from v0.x to v1.x. Follow each step carefully to avoid runtime errors.
+</Warning>
+
 <Steps>
 <Step title="Update Dependencies">
 Update your `requirements.txt` or `pyproject.toml` using the installation commands in the [Installation](#installation) section above.
@@ -225,11 +220,12 @@ agency = Agency(
 
 <Step title="Update Agent Definitions">
 **Model Settings**:
-```python
-# v0.x
+<CodeGroup>
+```python v0.x
 agent = Agent(temperature=0.7, top_p=1.0, max_completion_tokens=1000)
+```
 
-# v1.x (recommended)
+```python v1.x
 agent = Agent(
     model="gpt-4o",
     model_settings=ModelSettings(
@@ -239,17 +235,20 @@ agent = Agent(
     )
 )
 ```
+</CodeGroup>
 
-**Structured Outputs** - See [Breaking Changes](#breaking-changes) for details:
-```python
-# v0.x - This will CRASH in v1.x
+**Structured Outputs (Breaking Change):**
+<CodeGroup>
+```python v0.x
+# This will CRASH in v1.x
 completion = agency.get_completion(
     message="...",
     response_format={"type": "json_schema", "json_schema": {...}}
 )
 # NotImplementedError: response_format parameter is no longer supported
+```
 
-# v1.x - Required migration
+```python v1.x
 class TaskOutput(BaseModel):
     task_name: str
     status: str
@@ -257,11 +256,12 @@ class TaskOutput(BaseModel):
 agent = Agent(output_type=TaskOutput, ...)
 result = await agency.get_response(message="...", recipient_agent="AgentName")
 ```
+</CodeGroup>
 </Step>
 
 <Step title="Convert Tools">
-**v0.x Tool**:
-```python
+<CodeGroup>
+```python v0.x
 class MyTool(BaseTool):
     arg1: str = Field(..., description="Description")
 
@@ -269,8 +269,7 @@ class MyTool(BaseTool):
         return f"Result: {self.arg1}"
 ```
 
-**v1.x Tool** (using @function_tool decorator):
-```python
+```python v1.x
 @function_tool
 def my_tool(arg1: str) -> str:
     """Tool description."""
@@ -283,6 +282,7 @@ async def my_tool_with_context(ctx: RunContextWrapper[Any], arg1: str) -> str:
     # Access: ctx.context.agents, ctx.context.thread_manager
     return f"Result: {arg1}"
 ```
+</CodeGroup>
 </Step>
 
 <Step title="Update Interaction Calls (Optional)">
@@ -347,15 +347,15 @@ agent = Agent(
 ```
 </CodeGroup>
 
-**What Changed:**
-- **Breaking Change**: `response_validator` parameter is completely removed from Agent class - See [Breaking Changes](#breaking-changes) for details
+**What Changed (Breaking):**
+- `response_validator` parameter is completely removed from the Agent class
 - Validation is now passed using `output_guardrails` and `input_guardrails`
-- Retry validation logic is no longer incorporated within the library. Users have to implement their own retry logic by catching respective errors.
 </Step>
 
 </Steps>
 
-## Parameter Reference Tables
+<Accordion title="Migration Reference Tables">
+## Migration Reference Tables
 
 ### Changes to Agency Class
 
@@ -364,7 +364,7 @@ agent = Agent(
 | `agency_chart` parameter | Positional arguments for entry points + `communication_flows` parameter | Deprecated but works |
 | `threads_callbacks` | `load_threads_callback` + `save_threads_callback` | Breaking change |
 | `get_completion()` | `get_response()` (async) | Backward compatible |
-| `get_completion_stream()` | `get_response_stream()` (async) | **NotImplementedError** |
+| `get_completion_stream()` | `get_response_stream()` (async) | **No longer supported** |
 
 **Agency Structure Definition:**
 - **v0.x**: Used `agency_chart` parameter where standalone agents were entry points and lists defined communication paths
@@ -406,9 +406,9 @@ agent = Agent(
 |-------------|-------------|
 | `response_format={"type": "json_schema", ...}` | `output_type=PydanticModel` on Agent |
 | `get_completion(response_format=...)` | Agent-level `output_type` configuration |
+</Accordion>
 
 ## Complete Before/After Example
-
 <Tabs>
 <Tab title="v0.x (Current Production)">
 ```python
@@ -569,20 +569,7 @@ asyncio.run(main())
 </Tab>
 </Tabs>
 
-## Backward Compatibility
-
-Agency Swarm v1.x maintains backward compatibility where possible:
-
-- **`agency_chart`**: Still works but deprecated; migrate to positional arguments and `communication_flows`
-- **`get_completion()`**: Maintained as a synchronous wrapper; deprecated in favor of async `get_response()`
-- **`get_completion_stream()`**: **Not supported** - raises `NotImplementedError`; use async `get_response_stream()`
-- **Agent Parameters**: Individual model parameters still work but deprecated; use `model_settings`
-- **`BaseTool`**: Temporarily retained for gradual migration to `@function_tool`
-
-<Note>
-Deprecated features will be removed in a future major version. We recommend migrating to the new patterns for the best experience.
-</Note>
-
+<Accordion title="Additional Resources">
 ## Resources
 
 ### Available Examples
@@ -606,3 +593,5 @@ Each example includes detailed comments explaining v1.x concepts and can be run 
 - [OpenAI Agents SDK Documentation](https://openai.github.io/openai-agents-python/)
 - [Agency Swarm v0.x Documentation](https://agency-swarm.ai) (current production docs)
 - [GitHub Issues](https://github.com/VRSEN/agency-swarm/issues) - Report v1.x beta issues with the **v1.x beta** label
+
+</Accordion>
