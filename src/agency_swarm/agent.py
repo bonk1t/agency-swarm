@@ -1179,16 +1179,19 @@ class Agent(BaseAgent[MasterContext]):
         if not self._thread_manager:
             raise RuntimeError("Cannot prepare context: ThreadManager missing.")
 
-        # Start with base user context from agency, if it exists
-        base_user_context = getattr(self._agency_instance, "user_context", {})
-        merged_user_context = base_user_context.copy()
+        # Use the original user_context directly (no copy) so changes persist
+        user_context = getattr(self._agency_instance, "user_context", {})
+        
+        # Apply context_override temporarily for this run only
         if context_override:
-            merged_user_context.update(context_override)
+            # Apply overrides directly to the original context
+            # These will be available during the run and persist if tools modify them
+            user_context.update(context_override)
 
         return MasterContext(
             thread_manager=self._thread_manager,
             agents=self._agency_instance.agents,
-            user_context=merged_user_context,
+            user_context=user_context,
             current_agent_name=self.name,
         )
 
@@ -1386,6 +1389,7 @@ class Agent(BaseAgent[MasterContext]):
 
             try:
                 args = json.loads(input_json) if input_json else {}
+                args['_ctx'] = ctx
             except Exception as e:
                 return f"Error: Invalid JSON input: {e}"
             try:

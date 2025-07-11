@@ -6,6 +6,7 @@ It is deprecated and should not be used for new development.
 from abc import ABC, abstractmethod
 from typing import Any, ClassVar
 
+from agents import RunContextWrapper
 from docstring_parser import parse
 from openai.types.beta.threads.runs.tool_call import ToolCall
 from pydantic import BaseModel
@@ -23,11 +24,18 @@ class BaseTool(BaseModel, ABC):
     _caller_agent: Any = None
     _event_handler: Any = None
     _tool_call: ToolCall = None
+    _ctx: RunContextWrapper = None
     openai_schema: ClassVar[dict[str, Any]]
 
     def __init__(self, **kwargs):
+        # Extract _ctx before calling super().__init__
+        ctx_value = kwargs.pop('_ctx', None)
+
         super().__init__(**kwargs)
 
+        # Set _ctx AFTER Pydantic initialization to prevent it from being reset
+        if ctx_value is not None:
+            self._ctx = ctx_value
         # Ensure all ToolConfig variables are initialized
         config_defaults = {
             "strict": False,
