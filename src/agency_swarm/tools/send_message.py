@@ -77,8 +77,28 @@ class SendMessage(FunctionTool):
                         "recipient agent to complete the task. If not needed, provide an empty string."
                     ),
                 },
+                "key_moments": {
+                    "type": "string",
+                    "description": (
+                        "Optional. Summaries of important moments in the conversation so far. "
+                        "Used to give the recipient agent a concise recap."
+                    ),
+                },
+                "decisions": {
+                    "type": "string",
+                    "description": (
+                        "Optional. Record of decisions that have been made so far. "
+                        "Helps the recipient agent understand current direction."
+                    ),
+                },
             },
-            "required": ["my_primary_instructions", "message", "additional_instructions"],
+            "required": [
+                "my_primary_instructions",
+                "message",
+                "additional_instructions",
+                "key_moments",
+                "decisions",
+            ],
             "additionalProperties": False,
         }
 
@@ -114,6 +134,17 @@ class SendMessage(FunctionTool):
         message_content = kwargs.get("message")
         my_primary_instructions = kwargs.get("my_primary_instructions")
         additional_instructions = kwargs.get("additional_instructions", "")
+        key_moments = kwargs.get("key_moments")
+        decisions = kwargs.get("decisions")
+
+        if key_moments:
+            additional_instructions = (
+                f"{additional_instructions}\n\nKey moments:\n{key_moments}".strip()
+            )
+        if decisions:
+            additional_instructions = (
+                f"{additional_instructions}\n\nDecisions:\n{decisions}".strip()
+            )
 
         if not message_content:
             logger.error(f"Tool '{self.name}' invoked without 'message' parameter.")

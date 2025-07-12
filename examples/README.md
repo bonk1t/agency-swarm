@@ -12,5 +12,6 @@ This directory contains runnable examples demonstrating key features of Agency S
 - **`custom_persistence.py`** – Thread isolation with persistence
 - **`chat_completion_provider.py`** – Using Chat Completions API
 - **`observability_demo.py`** – Langfuse and AgentOps tracing
+- **`send_message_with_summary.py`** – SendMessage tool with key moments and decisions
 
 Run any file with `python examples/<name>.py` after setting your OpenAI API key.
