@@ -1,4 +1,4 @@
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from agents import RunHooks
@@ -159,3 +159,17 @@ async def test_agent_communication_context_hooks_propagation(mock_agent, mock_ag
     call_kwargs = mock_agent.get_response.call_args[1]
     assert "context_override" in call_kwargs
     assert "hooks_override" in call_kwargs
+
+
+def test_get_response_sync_calls_async_method(mock_agent):
+    """Ensure get_response_sync calls the async get_response."""
+    agency = Agency(mock_agent)
+    mock_result = MagicMock(final_output="Sync Response")
+
+    with patch.object(agency, "get_response", new_callable=AsyncMock) as mock_async:
+        mock_async.return_value = mock_result
+
+        result = agency.get_response_sync("Hello")
+
+    assert result.final_output == "Sync Response"
+    mock_async.assert_called_once()
