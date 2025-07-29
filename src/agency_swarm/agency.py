@@ -870,15 +870,3 @@ class Agency:
 
         TerminalDemoLauncher.start(self)
 
-    def copilot_demo(
-        self,
-        host: str = "0.0.0.0",
-        port: int = 8000,
-        frontend_port: int = 3000,
-        cors_origins: list[str] | None = None,
-    ) -> None:
-        """
-        Run a copilot demo of the agency.
-        """
-        # Copilot demo implementation
-        logger.warning("copilot_demo is not yet implemented in this version.")
