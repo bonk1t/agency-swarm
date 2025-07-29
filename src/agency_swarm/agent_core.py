@@ -4,7 +4,7 @@ import os
 import sys
 from collections.abc import AsyncGenerator, Callable
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any
 
 from agents import (
     Agent as BaseAgent,
@@ -31,33 +31,6 @@ from agency_swarm.utils.agent_file_manager import AgentFileManager
 
 logger = logging.getLogger(__name__)
 
-# --- Constants / Types ---
-# Combine old and new params for easier checking later
-AGENT_PARAMS = {
-    # New/Current
-    "files_folder",
-    "tools_folder",
-    "schemas_folder",
-    "api_headers",
-    "api_params",
-    "description",
-    "response_validator",
-    # Old/Deprecated (to check in kwargs)
-    "id",
-    "tool_resources",
-    "file_ids",
-    "reasoning_effort",
-    "validation_attempts",
-    "examples",
-    "file_search",
-    "refresh_from_id",
-}
-
-# --- Constants for dynamic tool creation ---
-SEND_MESSAGE_TOOL_PREFIX = "send_message_to_"
-MESSAGE_PARAM = "message"
-
-T = TypeVar("T", bound="Agent")
 
 
 class Agent(BaseAgent[MasterContext]):
@@ -73,10 +46,6 @@ class Agent(BaseAgent[MasterContext]):
     Attributes:
         files_folder (str | Path | None): Path to a local folder for managing files associated with this agent.
                                           If the folder name follows the pattern `*_vs_<vector_store_id>`,
-                                          files uploaded via `upload_file` will also be added to the specified
-                                          OpenAI Vector Store, and a `FileSearchTool` will be automatically added.
-        tools_folder (str | Path | None): Path to a directory containing tool definitions. Tools are automatically
-                                           discovered and loaded from this directory. Supports both BaseTool
                                            subclasses and FunctionTool instances. Python files starting with
                                            underscore are ignored.
         description (str | None): A description of the agent's role or purpose, used when generating
@@ -236,17 +205,6 @@ class Agent(BaseAgent[MasterContext]):
         """
         add_tool(self, tool)
 
-    def _load_tools_from_folder(self) -> None:
-        """Load tools defined in ``tools_folder`` and add them to the agent.
-
-        Supports both ``BaseTool`` subclasses and ``FunctionTool``
-        instances created via the ``@function_tool`` decorator.
-        """
-        load_tools_from_folder(self)
-
-    def _parse_schemas(self):
-        """Parse OpenAPI schemas from the schemas folder and create tools."""
-        parse_schemas(self)
 
     # --- Subagent Management ---
     def register_subagent(self, recipient_agent: "Agent") -> None:

@@ -33,12 +33,6 @@ class ConsoleRenderer:
         self.content = str(content)
         self.console = console or Console()
 
-    def cprint(self):
-        """Print the message to console with formatting."""
-        self.console.rule()
-        header_text = self._get_header()
-        md_content = Markdown(self.content)
-        self.console.print(Group(header_text, md_content), end="")
 
     def _get_header(self):
         """Generate formatted header with emoji and message info."""

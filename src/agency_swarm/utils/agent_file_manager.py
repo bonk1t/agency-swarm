@@ -138,7 +138,7 @@ class AgentFileManager:
     def get_id_from_file(self, f_path):
         """Get file id from file name"""
         if os.path.isfile(f_path):
-            file_name, file_ext = os.path.splitext(f_path)
+            file_name = os.path.splitext(f_path)[0]
             file_name = os.path.basename(file_name)
             file_name = file_name.split("_")
             if len(file_name) > 1:

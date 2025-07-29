@@ -111,38 +111,6 @@ class ConversationThread:
         for item in items:
             self.add_item(item)
 
-    def add_user_message(self, message: str | TResponseInputItem) -> None:
-        """Adds a user message to the thread history.
-
-        Accepts either a plain string (which will be formatted as a user role message)
-        or a pre-formatted `TResponseInputItem` dictionary with role='user'.
-
-        Args:
-            message (str | TResponseInputItem): The user message content as a string or a
-                                               dictionary with `{"role": "user", "content": ...}`.
-
-        Raises:
-            ValueError: If a dictionary is provided but is missing the 'content' key.
-            TypeError: If the message is not a string or a valid user message dictionary.
-        """
-        item_dict: TResponseInputItem
-        if isinstance(message, str):
-            item_dict = {"role": "user", "content": message}
-        elif isinstance(message, dict) and message.get("role") == "user":
-            if "content" not in message:
-                logger.error(f"User message dict missing 'content' key in thread {self.thread_id}")
-                raise ValueError("User message dict must have a 'content' key.")
-            item_dict = message
-        else:
-            logger.error(f"Invalid type for add_user_message: {type(message)} in thread {self.thread_id}")
-            raise TypeError(
-                f"Unsupported message type for add_user_message: {type(message)}. "
-                f"Expecting str or TResponseInputItem dict."
-            )
-        # Add the dictionary directly
-        self.add_item(item_dict)
-        logger.info(f"Added user message to thread {self.thread_id}")
-
     def get_history(
         self,
         max_items: int | None = None,
@@ -170,14 +138,6 @@ class ConversationThread:
         logger.debug(f"Generated history with {len(formatted_history)} items for thread {self.thread_id}")
         return formatted_history
 
-    def get_full_log(self) -> list[TResponseInputItem]:
-        """Returns the complete, raw list of message item dictionaries in the thread.
-
-        Returns:
-            list[TResponseInputItem]: The full list of items.
-        """
-        return list(self.items)
-
     def __len__(self) -> int:
         """Returns the number of message items currently in the thread history.
 
@@ -190,14 +150,6 @@ class ConversationThread:
         """Removes all message items from the thread history."""
         self.items.clear()
         logger.info(f"Cleared items from thread {self.thread_id}")
-
-    def get_items(self) -> list[TResponseInputItem]:
-        """Returns a copy of the thread's message items.
-
-        Returns:
-            list[TResponseInputItem]: Copy of the thread's message items.
-        """
-        return self.items.copy()
 
     def __bool__(self) -> bool:
         """Returns True if the thread has any message items, False otherwise."""
