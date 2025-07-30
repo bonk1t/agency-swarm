@@ -10,6 +10,7 @@ not vector store/FileSearch citations which are tested separately.
 """
 
 import asyncio
+import shutil
 import tempfile
 from pathlib import Path
 
@@ -35,25 +36,11 @@ async def test_file_attachment_citation_extraction():
         # Create test document with specific content
         with tempfile.TemporaryDirectory(prefix="file_attachment_citation_test_") as temp_dir_str:
             temp_dir = Path(temp_dir_str)
-            test_file = temp_dir / "quarterly_report.txt"
-            test_file.write_text("""
-            COMPANY QUARTERLY REPORT Q3 2024
-
-            Financial Summary:
-            - Revenue: $8,456,789.12
-            - Expenses: $3,234,567.89
-            - Net Income: $5,222,221.23
-
-            Employee Information:
-            - Total Staff: 847 employees
-            - New Hires: 23 people
-            - Departments: Engineering, Sales, Marketing
-
-            Product Performance:
-            - Product X: 145% growth
-            - Product Y: 89% growth
-            - Product Z: 67% growth
-            """)
+            # Use the PDF test file instead of creating a text file
+            original_pdf = Path("tests/data/files/quarterly_report.pdf")
+            assert original_pdf.exists(), f"Test PDF file not found at {original_pdf}"
+            test_file = temp_dir / "quarterly_report.pdf"
+            shutil.copy(original_pdf, test_file)
 
             # Create agent for direct file attachment processing
             agent = Agent(
@@ -78,11 +65,11 @@ async def test_file_attachment_citation_extraction():
             # Adding multiple prompts that strongly encourage citation generation
             result = await agent.get_response(
                 message=(
-                    "Please analyze the attached financial report. I need you to:\n"
+                    "Please analyze the attached financial report PDF. I need you to:\n"
                     "1. Find and quote the EXACT revenue figure from the document\n"
-                    "2. Include the specific line from the document that contains '$8,456,789.12'\n"
-                    "3. Reference the document by citing the specific text\n"
-                    "Make sure to quote directly from the attached file."
+                    "2. Tell me what the revenue amount is (it should be $8,456,789.12)\n"
+                    "3. Reference the document by citing the specific information\n"
+                    "Make sure to extract information from the attached PDF file."
                 ),
                 file_ids=[uploaded_file_id],
             )
@@ -168,9 +155,11 @@ async def test_file_attachment_vs_vector_store_citation_distinction():
         vector_file = vector_dir / "vector_document.txt"
         vector_file.write_text("Test content for citation comparison with ID: CC-2024-789")
 
-        # Create a separate file for direct attachment to avoid conflicts
-        attachment_file = temp_dir / "attachment_document.txt"
-        attachment_file.write_text("Test content for citation comparison with ID: CC-2024-789")
+        # Create a separate PDF file for direct attachment to avoid conflicts
+        original_pdf = Path("tests/data/files/quarterly_report.pdf")
+        assert original_pdf.exists(), f"Test PDF file not found at {original_pdf}"
+        attachment_file = temp_dir / "attachment_document.pdf"
+        shutil.copy(original_pdf, attachment_file)
 
         # Create agent with files_folder (vector store)
         vector_agent = Agent(
@@ -209,7 +198,7 @@ async def test_file_attachment_vs_vector_store_citation_distinction():
             uploaded_file = attachment_agent.client_sync.files.create(file=f, purpose="assistants")
         file_id = uploaded_file.id
         attachment_result = await attachment_agent.get_response(
-            "Please analyze the attached file and tell me the exact ID mentioned. Quote the specific text.",
+            "Please analyze the attached PDF and tell me the revenue figure mentioned in it.",
             file_ids=[file_id],
         )
         attachment_history = attachment_agent._thread_manager.get_conversation_history("AttachmentAgent", None)

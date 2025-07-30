@@ -8,8 +8,9 @@ from typing import Any
 from pydantic import BaseModel
 from rich.console import Console
 
-from .console_renderer import LiveConsoleRenderer
 from agency_swarm.agent_core import Agent
+
+from .console_renderer import LiveConsoleRenderer
 
 try:
     from ag_ui.core import (

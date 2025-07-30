@@ -45,7 +45,6 @@ def make_response_endpoint(request_model, agency_factory: Callable[..., Agency],
         if request.file_urls is not None:
             file_ids_map = await upload_from_urls(request.file_urls)
             combined_file_ids = (combined_file_ids or []) + list(file_ids_map.values())
-            await asyncio.sleep(6) # Wait until files are ready for retrieval
 
         agency_instance = agency_factory(load_threads_callback=load_callback)
 
@@ -86,7 +85,6 @@ def make_stream_endpoint(request_model, agency_factory: Callable[..., Agency], v
         if request.file_urls is not None:
             file_ids_map = await upload_from_urls(request.file_urls)
             combined_file_ids = (combined_file_ids or []) + list(file_ids_map.values())
-            await asyncio.sleep(6) # Wait until files are ready for retrieval
 
         agency_instance = agency_factory(load_threads_callback=load_callback)
 

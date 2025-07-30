@@ -17,25 +17,27 @@ load_dotenv()
 client = AsyncOpenAI()
 
 logger = logging.getLogger(__name__)
-logging.basicConfig(level=logging.INFO)
 
 
-def get_extension_from_name(name):
+def get_extension_from_name(name: str) -> str | None:
     ext = os.path.splitext(name)[1]
     return ext if ext else None
 
-def get_extension_from_url(url):
+
+def get_extension_from_url(url: str) -> str | None:
     path = urlparse(url).path
     ext = os.path.splitext(path)[1]
     return ext if ext else None
 
-def get_extension_from_filetype(file_path):
+
+def get_extension_from_filetype(file_path: str | Path) -> str | None:
     kind = filetype.guess(str(file_path))
     if kind:
         return f".{kind.extension}"
     return None
 
-async def async_download_file(url, name, save_dir):
+
+async def async_download_file(url: str, name: str, save_dir: str | Path) -> str:
     """
     Helper function to download file from url to local path.
     Args:
@@ -72,10 +74,41 @@ async def async_download_file(url, name, save_dir):
     os.rename(temp_path, local_path)
     return str(local_path)
 
-async def async_upload_to_openai(file_path):
+
+async def async_upload_to_openai(file_path: str | Path) -> str:
     with open(file_path, "rb") as f:
         uploaded_file = await client.files.create(file=f, purpose="assistants")
     return uploaded_file.id
+
+
+async def wait_for_file_ready(file_id: str, max_attempts: int = 30, delay: float = 0.5) -> bool:
+    """
+    Wait for a file to be ready for use after upload.
+
+    Args:
+        file_id: The OpenAI file ID to check
+        max_attempts: Maximum number of polling attempts
+        delay: Delay between attempts in seconds
+
+    Returns:
+        True if file is ready, False if timeout
+    """
+    for _ in range(max_attempts):
+        try:
+            file_data = await client.files.retrieve(file_id)
+            # Check if file status indicates it's ready (this may vary by API)
+            if hasattr(file_data, "status") and file_data.status in ["processed", "ready"]:
+                return True
+            # If no status field or status is unknown, assume ready after successful retrieval
+            if file_data.id == file_id:
+                return True
+        except Exception as e:
+            logger.debug(f"File {file_id} not ready yet: {e}")
+
+        await asyncio.sleep(delay)
+
+    return False
+
 
 async def upload_from_urls(file_map: dict[str, str]) -> dict[str, str]:
     """
@@ -92,5 +125,13 @@ async def upload_from_urls(file_map: dict[str, str]) -> dict[str, str]:
         file_paths = await asyncio.gather(*download_tasks)
         upload_tasks = [async_upload_to_openai(path) for path in file_paths]
         file_ids = await asyncio.gather(*upload_tasks)
+
+    # Wait for all files to be ready
+    ready_tasks = [wait_for_file_ready(file_id) for file_id in file_ids]
+    ready_results = await asyncio.gather(*ready_tasks)
+
+    if not all(ready_results):
+        failed_files = [name for name, ready in zip(file_map.keys(), ready_results, strict=True) if not ready]
+        logger.warning(f"Some files may not be ready for use: {failed_files}")
 
     return dict(zip(file_map.keys(), file_ids, strict=True))
