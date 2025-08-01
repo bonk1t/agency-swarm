@@ -98,3 +98,21 @@ async def upload_from_urls(file_map: dict[str, str]) -> dict[str, str]:
         file_ids = await asyncio.gather(*upload_tasks)
 
     return dict(zip(file_map.keys(), file_ids, strict=True))
+
+
+async def wait_for_file_processing(file_ids: list[str], timeout: int = 60) -> None:
+    """Poll OpenAI API until all files are processed or timeout."""
+    start = asyncio.get_event_loop().time()
+    pending = set(file_ids)
+    while pending:
+        done = set()
+        for file_id in pending:
+            info = await client.files.retrieve(file_id)
+            if getattr(info, "status", None) == "processed":
+                done.add(file_id)
+        pending -= done
+        if not pending:
+            break
+        if asyncio.get_event_loop().time() - start > timeout:
+            raise TimeoutError("Timed out waiting for OpenAI to process files")
+        await asyncio.sleep(2)
