@@ -10,7 +10,10 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from agency_swarm.agency import Agency
-from agency_swarm.integrations.fastapi_utils.file_handler import upload_from_urls
+from agency_swarm.integrations.fastapi_utils.file_handler import (
+    upload_from_urls,
+    wait_for_file_processing,
+)
 from agency_swarm.messages import MessageFilter
 from agency_swarm.ui.core.converters import AguiAdapter, serialize
 
@@ -46,7 +49,7 @@ def make_response_endpoint(request_model, agency_factory: Callable[..., Agency],
             try:
                 file_ids_map = await upload_from_urls(request.file_urls)
                 combined_file_ids = (combined_file_ids or []) + list(file_ids_map.values())
-                await asyncio.sleep(6) # Wait until files are ready for retrieval
+                await wait_for_file_processing(list(file_ids_map.values()))
             except Exception as e:
                 return {"error": f"Error downloading file from provided urls: {e}"}
 
@@ -89,7 +92,7 @@ def make_stream_endpoint(request_model, agency_factory: Callable[..., Agency], v
         if request.file_urls is not None:
             file_ids_map = await upload_from_urls(request.file_urls)
             combined_file_ids = (combined_file_ids or []) + list(file_ids_map.values())
-            await asyncio.sleep(6) # Wait until files are ready for retrieval
+            await wait_for_file_processing(list(file_ids_map.values()))
 
         agency_instance = agency_factory(load_threads_callback=load_callback)
 
