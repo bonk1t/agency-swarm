@@ -24,16 +24,19 @@ def get_extension_from_name(name):
     ext = os.path.splitext(name)[1]
     return ext if ext else None
 
+
 def get_extension_from_url(url):
     path = urlparse(url).path
     ext = os.path.splitext(path)[1]
     return ext if ext else None
+
 
 def get_extension_from_filetype(file_path):
     kind = filetype.guess(str(file_path))
     if kind:
         return f".{kind.extension}"
     return None
+
 
 async def download_file(url, name, save_dir):
     """
@@ -72,14 +75,33 @@ async def download_file(url, name, save_dir):
     os.rename(temp_path, local_path)
     return str(local_path)
 
+
+async def wait_for_file_processed(file_id: str, timeout: int = 15, interval: int = 2) -> None:
+    """Poll OpenAI until the uploaded file is processed."""
+    start = asyncio.get_event_loop().time()
+    while True:
+        try:
+            info = await client.files.retrieve(file_id)
+            if getattr(info, "status", "") == "processed":
+                return
+        except Exception as exc:  # pragma: no cover - best effort
+            logger.debug(f"Error checking file status for {file_id}: {exc}")
+        if asyncio.get_event_loop().time() - start > timeout:
+            logger.warning(f"Timed out waiting for file {file_id} to process")
+            return
+        await asyncio.sleep(interval)
+
+
 async def upload_to_openai(file_path):
     try:
         with open(file_path, "rb") as f:
             uploaded_file = await client.files.create(file=f, purpose="assistants")
+        await wait_for_file_processed(uploaded_file.id)
     except Exception as e:
         logger.error(f"Error uploading file {file_path} to OpenAI: {e}")
         raise e
     return uploaded_file.id
+
 
 async def upload_from_urls(file_map: dict[str, str]) -> dict[str, str]:
     """
