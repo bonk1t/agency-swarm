@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 import re
@@ -60,7 +61,7 @@ class AttachmentManager:
             created_vs = self.agent.client_sync.vector_stores.create(name=vs_name)
             return created_vs.id
 
-    def sort_file_attachments(self, file_ids: list[str]) -> list[dict]:
+    async def sort_file_attachments(self, file_ids: list[str]) -> list[dict]:
         """
         Sort file attachments by type and prepare them for processing.
 
@@ -119,8 +120,11 @@ class AttachmentManager:
         if file_search_ids:
             temp_vs_id = self.init_attachments_vs(vs_name=f"temp_attachments_vs_{uuid.uuid4().hex[:8]}")
             self._temp_vector_store_id = temp_vs_id
-            logger.info(f"Adding file ids: {file_search_ids} for {self.agent.name}'s file search")
+            logger.info(
+                f"Adding file ids: {file_search_ids} for {self.agent.name}'s file search"
+            )
             self.agent.file_manager.add_file_search_tool(temp_vs_id, file_search_ids)
+            await self._wait_for_temp_vector_store_processing()
 
         if code_interpreter_ids:
             logger.info(f"Adding file ids: {code_interpreter_ids} for {self.agent.name}'s code interpreter")
@@ -128,6 +132,21 @@ class AttachmentManager:
             self._temp_code_interpreter_file_ids = code_interpreter_ids
 
         return content_list
+
+    async def _wait_for_temp_vector_store_processing(self, timeout: int = 30) -> None:
+        """Wait for the temporary vector store to finish processing."""
+        if not self._temp_vector_store_id:
+            return
+        try:
+            for _ in range(timeout):
+                vs = await self.agent.client.vector_stores.retrieve(self._temp_vector_store_id)
+                if vs.status == "completed":
+                    break
+                if vs.status == "failed":
+                    raise AgentsException(f"Vector store processing failed: {vs}")
+                await asyncio.sleep(1)
+        except Exception as e:  # pragma: no cover - best effort
+            logger.warning(f"Failed while waiting for vector store {self._temp_vector_store_id}: {e}")
 
     def attachments_cleanup(self):
         """
@@ -430,7 +449,10 @@ class AgentFileManager:
             elif Path(new_file).suffix.lower() in FILE_SEARCH_FILE_EXTENSIONS:
                 self.upload_file(str(new_file))
             else:
-                raise AgentsException(f"Unsupported file extension: {Path(new_file).suffix.lower()} for file {new_file}")
+                ext = Path(new_file).suffix.lower()
+                raise AgentsException(
+                    f"Unsupported file extension: {ext} for file {new_file}"
+                )
 
         # Add FileSearchTool if VS ID is parsed.
         if self.agent._associated_vector_store_id:
