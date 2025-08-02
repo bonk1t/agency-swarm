@@ -2,6 +2,7 @@ import logging
 import os
 import re
 import uuid
+import time
 from pathlib import Path
 
 from agents import CodeInterpreterTool, FileSearchTool
@@ -121,6 +122,10 @@ class AttachmentManager:
             self._temp_vector_store_id = temp_vs_id
             logger.info(f"Adding file ids: {file_search_ids} for {self.agent.name}'s file search")
             self.agent.file_manager.add_file_search_tool(temp_vs_id, file_search_ids)
+            for tool in self.agent.tools:
+                if isinstance(tool, FileSearchTool) and temp_vs_id in tool.vector_store_ids:
+                    tool.include_search_results = True
+                    break
 
         if code_interpreter_ids:
             logger.info(f"Adding file ids: {code_interpreter_ids} for {self.agent.name}'s code interpreter")
@@ -574,3 +579,20 @@ class AgentFileManager:
                 raise AgentsException(
                     f"Failed to add file {file_id} to Vector Store {vector_store_id}: {e}"
                 ) from e
+
+        # Wait until all files are processed
+        pending = set(file_ids)
+        start = time.time()
+        while pending and time.time() - start < 30:
+            for fid in list(pending):
+                status = self.agent.client_sync.vector_stores.files.retrieve(
+                    vector_store_id=vector_store_id, file_id=fid
+                ).status
+                if status == "completed":
+                    pending.remove(fid)
+            if pending:
+                time.sleep(2)
+        if pending:
+            logger.warning(
+                f"Agent {self.agent.name}: Timeout waiting for files {pending} to process in vector store {vector_store_id}"
+            )
