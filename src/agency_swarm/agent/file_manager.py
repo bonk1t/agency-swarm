@@ -1,6 +1,7 @@
 import logging
 import os
 import re
+import time
 import uuid
 from pathlib import Path
 
@@ -430,7 +431,10 @@ class AgentFileManager:
             elif Path(new_file).suffix.lower() in FILE_SEARCH_FILE_EXTENSIONS:
                 self.upload_file(str(new_file))
             else:
-                raise AgentsException(f"Unsupported file extension: {Path(new_file).suffix.lower()} for file {new_file}")
+                raise AgentsException(
+                    f"Unsupported file extension: {Path(new_file).suffix.lower()} "
+                    f"for file {new_file}"
+                )
 
         # Add FileSearchTool if VS ID is parsed.
         if self.agent._associated_vector_store_id:
@@ -574,3 +578,24 @@ class AgentFileManager:
                 raise AgentsException(
                     f"Failed to add file {file_id} to Vector Store {vector_store_id}: {e}"
                 ) from e
+
+        self.wait_for_vector_store_processing(vector_store_id)
+
+    def wait_for_vector_store_processing(self, vector_store_id: str, timeout: int = 30) -> None:
+        """Wait until the vector store finishes processing uploaded files."""
+        start_time = time.time()
+        while time.time() - start_time < timeout:
+            try:
+                vs = self.agent.client_sync.vector_stores.retrieve(vector_store_id=vector_store_id)
+                status = getattr(vs, "status", None)
+                if status == "completed":
+                    return
+                if status == "failed":
+                    raise AgentsException(f"Vector store processing failed: {vs}")
+            except Exception as e:  # pragma: no cover - best effort
+                logger.warning(f"Error checking vector store status {vector_store_id}: {e}")
+            time.sleep(1)
+
+        logger.warning(
+            f"Vector store {vector_store_id} processing timeout after {timeout} seconds"
+        )
