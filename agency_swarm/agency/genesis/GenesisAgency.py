@@ -8,11 +8,16 @@ from .ToolCreator import ToolCreator
 
 
 class GenesisAgency(Agency):
-    def __init__(self, with_browsing=True, **kwargs):
+    def __init__(self, with_browsing=True, model=None, **kwargs):
         if "max_prompt_tokens" not in kwargs:
             kwargs["max_prompt_tokens"] = 25000
+        
+        # Pass model to the Agency base class if provided
+        if model is not None:
+            kwargs["model"] = model
 
         if "agency_chart" not in kwargs:
+            # Create agents normally - they will inherit model from Agency
             agent_creator = AgentCreator()
             genesis_ceo = GenesisCEO()
             tool_creator = ToolCreator()

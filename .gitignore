@@ -163,3 +163,4 @@ test_agents/
 
 # SQLite
 *.db
+venv/
