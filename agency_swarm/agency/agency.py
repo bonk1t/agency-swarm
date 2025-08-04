@@ -81,6 +81,7 @@ class Agency:
         max_prompt_tokens: int = None,
         max_completion_tokens: int = None,
         truncation_strategy: dict = None,
+        model: str = None,
     ):
         """
         Initializes the Agency object, setting up agents, threads, and core functionalities.
@@ -100,6 +101,7 @@ class Agency:
             max_prompt_tokens (int, optional): The maximum number of tokens allowed in the prompt for each agent. Agent-specific values will override this. Defaults to None.
             max_completion_tokens (int, optional): The maximum number of tokens allowed in the completion for each agent. Agent-specific values will override this. Defaults to None.
             truncation_strategy (dict, optional): The truncation strategy to use for the completion for each agent. Agent-specific values will override this. Defaults to None.
+            model (str, optional): The OpenAI model to use for all agents. Agent-specific values will override this. Defaults to None.
 
         This constructor initializes various components of the Agency, including CEO, agents, threads, and user interactions. It parses the agency chart to set up the organizational structure and initializes the messaging tools, agents, and threads necessary for the operation of the agency. Additionally, it prepares a main thread for user interactions.
         """
@@ -122,6 +124,7 @@ class Agency:
         self.max_prompt_tokens = max_prompt_tokens
         self.max_completion_tokens = max_completion_tokens
         self.truncation_strategy = truncation_strategy
+        self.model = model
 
         # set thread type based send_message_tool_class async mode
         if (
@@ -791,6 +794,8 @@ class Agency:
                 agent.top_p = self.top_p
             if self.max_prompt_tokens is not None and agent.max_prompt_tokens is None:
                 agent.max_prompt_tokens = self.max_prompt_tokens
+            if self.model is not None and agent.model is None:
+                agent.model = self.model
             if (
                 self.max_completion_tokens is not None
                 and agent.max_completion_tokens is None

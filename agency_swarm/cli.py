@@ -68,6 +68,12 @@ def main():
         action="store_true",
         help="Enable browsing agent.",
     )
+    genesis_parser.add_argument(
+        "--model",
+        default=None,
+        type=str,
+        help="OpenAI model to use for the genesis agents (e.g., gpt-4o, gpt-4o-mini, gpt-3.5-turbo).",
+    )
 
     # import-agent
     import_parser = subparsers.add_parser(
@@ -124,7 +130,7 @@ def main():
 
         from agency_swarm.agency.genesis import GenesisAgency
 
-        agency = GenesisAgency(with_browsing=args.with_browsing)
+        agency = GenesisAgency(with_browsing=args.with_browsing, model=args.model)
         agency.run_demo()
     elif args.command == "import-agent":
         from agency_swarm.util import import_agent
