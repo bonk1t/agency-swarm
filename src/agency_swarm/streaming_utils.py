@@ -33,6 +33,38 @@ def add_agent_name_to_event(event: Any, agent_name: str, caller_agent: str | Non
         # For object-like events, add as attributes
         event.agent_name = agent_name
         event.caller_agent = caller_agent
+
+        # Try to enhance the repr/str by modifying the class itself
+        try:
+            original_class = event.__class__
+
+            # Check if we've already enhanced this class
+            if not hasattr(original_class, "_enhanced_repr_original"):
+                # Store the original __repr__ method
+                original_class._enhanced_repr_original = original_class.__repr__
+
+                # Create a custom __repr__ method that shows all attributes
+                def enhanced_repr(self):
+                    # Get all attributes, including our new ones
+                    attrs = []
+                    for attr_name in sorted(dir(self)):
+                        if not attr_name.startswith("_") and not callable(getattr(self, attr_name, None)):
+                            try:
+                                value = getattr(self, attr_name)
+                                attrs.append(f"{attr_name}={repr(value)}")
+                            except (AttributeError, TypeError):
+                                pass
+
+                    attrs_str = ", ".join(attrs)
+                    return f"{original_class.__name__}({attrs_str})"
+
+                # Replace the class __repr__ method
+                original_class.__repr__ = enhanced_repr
+                original_class.__str__ = enhanced_repr
+
+        except Exception as e:
+            logger.error(f"Could not add agent name to event: {e}")
+
     return event
 
 

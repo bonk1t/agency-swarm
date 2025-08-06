@@ -40,14 +40,31 @@ logger = logging.getLogger(__name__)
 
 # Universal function to serialize any object to a JSON-compatible format
 def serialize(obj):
+    def add_agent_fields(result, obj):
+        """Add agent_name and caller_agent to result if they exist on obj"""
+        if hasattr(obj, 'agent_name'):
+            result['agent_name'] = obj.agent_name
+        if hasattr(obj, 'caller_agent'):
+            result['caller_agent'] = obj.caller_agent
+        return result
+    
     if dataclasses.is_dataclass(obj):
-        return {k: serialize(v) for k, v in dataclasses.asdict(obj).items()}
+        result = {k: serialize(v) for k, v in dataclasses.asdict(obj).items()}
+        return add_agent_fields(result, obj)
     elif isinstance(obj, BaseModel):
-        return {k: serialize(v) for k, v in obj.model_dump().items()}
+        result = {k: serialize(v) for k, v in obj.model_dump().items()}
+        return add_agent_fields(result, obj)
     elif isinstance(obj, list | tuple):
         return [serialize(item) for item in obj]
     elif isinstance(obj, dict):
         return {k: serialize(v) for k, v in obj.items()}
+    elif hasattr(obj, "__dict__"):
+        # Handle objects with __dict__ that aren't dataclasses or BaseModel
+        result = {}
+        for attr_name, value in obj.__dict__.items():
+            if not attr_name.startswith("_"):
+                result[attr_name] = serialize(value)
+        return add_agent_fields(result, obj)
     else:
         return str(obj)
 
