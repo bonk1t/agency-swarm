@@ -280,6 +280,16 @@ def make_metadata_endpoint(agency_metadata: dict, verify_token):
     return handler
 
 
+def make_routes_endpoint(endpoints: list, verify_token):
+    async def handler(token: str = Depends(verify_token)):
+        """Return a list of all available endpoints."""
+        return {
+            "endpoints": endpoints,
+        }
+
+    return handler
+
+
 async def exception_handler(request, exc):
     error_message = str(exc)
     if isinstance(exc, tuple):
