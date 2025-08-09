@@ -50,6 +50,7 @@ def run_fastapi(
             exception_handler,
             get_verify_token,
             make_agui_chat_endpoint,
+            make_routes_endpoint,
             make_metadata_endpoint,
             make_response_endpoint,
             make_stream_endpoint,
@@ -135,6 +136,14 @@ def run_fastapi(
             endpoints.append(f"/tool/{tool_name}")
 
     app.add_exception_handler(Exception, exception_handler)
+
+    # Add endpoint to return all created endpoints
+    app.add_api_route(
+        "/endpoints",
+        make_routes_endpoint(endpoints, verify_token),
+        methods=["GET"],
+    )
+    endpoints.append("/endpoints")
 
     logger.info("Created endpoints:\n" + "\n".join(endpoints))
 
