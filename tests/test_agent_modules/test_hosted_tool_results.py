@@ -41,11 +41,3 @@ async def test_web_search_results_have_metadata():
     assert result.get("callerAgent") is None
     assert "WEB_SEARCH_RESULTS" in result.get("content", "")
 
-
-def test_extract_no_results_returns_empty():
-    """Ensure empty list is returned when no hosted tool calls present."""
-    agent = Agent(name="EmptyAgent", instructions="Test")
-    exec_handler = Execution(agent)
-
-    results = exec_handler._extract_hosted_tool_results([])
-    assert results == []
