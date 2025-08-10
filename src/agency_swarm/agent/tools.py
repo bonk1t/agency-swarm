@@ -7,9 +7,9 @@ and OpenAPI schema parsing for the Agent class.
 
 import os
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
-from agents import Tool
+from agents import Tool, WebSearchTool
 from openai._utils._logs import logger
 
 from agency_swarm.tools import BaseTool, ToolFactory
@@ -138,3 +138,15 @@ def parse_schemas(agent: "Agent") -> None:
                 )
         else:
             logger.warning(f"Schemas folders must be strings. Skipping '{schemas_folder}' for agent '{agent.name}'.")
+
+def initialize_web_search_tool(kwargs: dict[str, Any]) -> None:
+    """Initialize the WebSearchTool for the agent.
+
+    Args:
+        agent: The agent to initialize the WebSearchTool for
+    """
+    if "tools" in kwargs:
+        tools_list = kwargs["tools"]
+        for i, tool in enumerate(tools_list):
+            if isinstance(tool, type) and issubclass(tool, WebSearchTool):
+                tools_list[i] = WebSearchTool()

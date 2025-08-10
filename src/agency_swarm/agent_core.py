@@ -19,6 +19,7 @@ from agency_swarm.agent import (
     Execution,
     add_tool,
     handle_deprecated_parameters,
+    initialize_web_search_tool,
     load_tools_from_folder,
     parse_schemas,
     register_subagent,
@@ -144,6 +145,9 @@ class Agent(BaseAgent[MasterContext]):
         """
         # Handle deprecated parameters
         handle_deprecated_parameters(kwargs)
+
+        # Initialize WebSearchTool if it was passed as a class instead of an instance
+        initialize_web_search_tool(kwargs)
 
         # Separate kwargs into base agent params and agency swarm params
         base_agent_params, current_agent_params = separate_kwargs(kwargs)
