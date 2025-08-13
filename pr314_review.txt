@@ -1,0 +1,62 @@
+PR314 Review Analysis
+=====================
+
+This document summarizes changes in PR314 and approvals per file.
+
+
+File-by-file summary
+--------------------
+
+1. `.claude/README.md` – Introduces specialized Claude Code sub-agents and phased workflow. **Approved**
+2. `.claude/agents/agent-creator.md` – Detailed templates and process for creating agent modules. **Approved**
+3. `.claude/agents/api-researcher.md` – Guidance for researching MCP servers and APIs. **Approved**
+4. `.claude/agents/instructions-writer.md` – Prompt-engineering guidelines for writing agent instructions. **Approved**
+5. `.claude/agents/prd-creator.md` – Steps for drafting PRDs with tool limits and communication patterns. **Approved**
+6. `.claude/agents/qa-tester.md` – Workflow for wiring agencies and testing with sample queries. **Approved**
+7. `.claude/agents/tools-creator.md` – Instructions for implementing and testing tools, prioritizing MCP servers. **Approved**
+8. `.cursorrules` → `.cursor/rules/agency_swarm.mdc` – Migrates and updates Cursor rules for agency creation. **Approved**
+9. `.gitignore` – Adds `references/` to ignored paths. **Approved**
+10. `CLAUDE.md` – High-level orchestration guide for coordinating sub‑agents. **Approved**
+11. `ai_docs/agency-swarm` – Adds documentation submodule reference. **Approved**
+12. `docs/additional-features/agency-context.mdx` – New guide replacing shared state with agency context. **Approved**
+13. `docs/additional-features/asynchronous-execution.mdx` – Warns feature applies only to v0.7 and earlier. **Approved**
+14. `docs/additional-features/azure-openai.mdx` – Expanded setup instructions; client variable renamed for clarity. **Needs minor fixes (applied)**
+15. `docs/additional-features/custom-communication-flows/common-use-cases.mdx` – Adds v1.x examples for custom flows. **Approved**
+16. `docs/additional-features/custom-communication-flows/hybrid-patterns.mdx` – New doc on combining SendMessage and handoffs. **Approved**
+17. `docs/additional-features/custom-communication-flows/overview.mdx` – Adds tabs with pre‑made SendMessage classes. **Approved**
+18. `docs/additional-features/deployment-to-production.mdx` – Adds v1.x callbacks for persistence. **Approved**
+19. `docs/additional-features/fastapi-integration.mdx` – Separates instructions for v1.x and v0.x using code groups. **Approved**
+20. `docs/additional-features/few-shot-examples.mdx` – Marks feature as legacy for v0.7 and earlier. **Approved**
+21. `docs/additional-features/mcp-tools-server.mdx` – Introduces tabbed v1.x instructions for MCP servers. **Approved**
+22. `docs/additional-features/observability.mdx` – Overhauled with supported tracing platforms. **Approved**
+23. `docs/additional-features/open-source-models.mdx` – Adds LiteLLM integration steps. **Approved**
+24. `docs/additional-features/output-validation.mdx` – Explains guardrails vs response validators across versions. **Approved**
+25. `docs/additional-features/shared-state.mdx` – Removed in favor of agency context. **Approved**
+26. `docs/additional-features/streaming.mdx` – Adds v1.x streaming guidance; typo corrected. **Approved**
+27. `docs/core-framework/agencies/agency-parameters.mdx` – Adds warnings for legacy features and fixes typos. **Approved**
+28. `docs/core-framework/agencies/communication-flows.mdx` – Updates examples and structure for v1.x. **Approved**
+29. `docs/core-framework/agencies/overview.mdx` – Describes new Agency parameters with deprecated list. **Approved**
+30. `docs/core-framework/agencies/running-agency.mdx` – Adds CopilotKit demo and run options. **Approved**
+31. `docs/core-framework/agencies/visualization.mdx` – New guide for HTML and ReactFlow visualizations. **Approved**
+32. `docs/core-framework/agents/advanced-configuration.mdx` – Marks content as v0.7 legacy. **Approved**
+33. `docs/core-framework/agents/built-in-tools.mdx` – Adds agents SDK tool listings for v1.x. **Approved**
+34. `docs/core-framework/agents/overview.mdx` – Adds detailed parameter tables and v1.x guidance. **Approved**
+35. `docs/core-framework/state-management.mdx` – Notes feature applies only to older versions. **Approved**
+36. `docs/core-framework/tools/custom-tools/best-practices.mdx` – Adds v1.x function_tool examples. **Approved**
+37. `docs/core-framework/tools/custom-tools/configuration.mdx` – Marks advanced configuration as legacy. **Approved**
+38. `docs/core-framework/tools/custom-tools/step-by-step-guide.mdx` – Introduces function_tool workflow; tabs for versions. **Approved**
+39. `docs/core-framework/tools/mcp-integration.mdx` – Expands MCP integration with server types. **Approved**
+40. `docs/core-framework/tools/openapi-schemas.mdx` – Adds legacy warning for ToolFactory option. **Approved**
+41. `docs/core-framework/tools/overview.mdx` – Updates images and links; references agency-swarm-tools repo. **Approved**
+42. `docs/core-framework/tools/tool-factory.mdx` – Marks feature as legacy. **Approved**
+43. `docs/docs.json` – Updates navigation structure for new/removed pages. **Approved**
+44. `docs/faq.mdx` – Revises persistence example to return dict and updates agency context link. **Approved after fixes**
+45. `docs/images/agents-vs-programs-light.png` – Adds light-mode diagram. **Approved**
+46. `docs/migration/guide.mdx` – Adds installation tabs and clarifies beta status. **Approved**
+47. `docs/platform/overview.mdx` – Fixes typo and clarifies roadmap wording. **Approved after fixes**
+48. `docs/references/api.mdx` – Comprehensive API reference with v1.x and v0.x tabs. **Approved**
+49. `docs/welcome/ai-agency-vs-other-frameworks.mdx` – Updates comparison table and wording. **Approved**
+50. `docs/welcome/getting-started/from-scratch.mdx` – Major overhaul with tabbed v1.x/v0.x quickstart. **Approved**
+51. `docs/welcome/getting-started/genesis-agency.mdx` – Marks Genesis Agency as legacy. **Approved**
+52. `docs/welcome/overview.mdx` – Mentions Responses API and replaces state management card. **Approved**
+
