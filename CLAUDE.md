@@ -193,6 +193,7 @@ uv run pytest tests/integration/ -v                   # Integration tests
 
 ## Memory & Expectations
 - User expects explicit status reporting, test-first mindset, and directness. Update `CLAUDE.md` first after any negative feedback.
+- Avoid using `types.SimpleNamespace`; favor typed objects from the Agents or OpenAI SDKs.
 
 ## Mandatory Search Discipline
 - After changes, aggressively search for and clean up related patterns throughout the codebase.

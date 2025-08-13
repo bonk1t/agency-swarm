@@ -10,10 +10,11 @@ recipient details.
 import json
 import logging
 import time
-from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 from agents import FunctionTool, RunContextWrapper, handoff
+from agents.items import ToolCallItem
+from agents.stream_events import RunItemStreamEvent
 from openai.types.responses import ResponseFunctionToolCall
 
 from ..context import MasterContext
@@ -384,7 +385,10 @@ class SendMessage(FunctionTool):
             status="in_progress",  # Start as in_progress like the SDK does
         )
 
-        sentinel = SimpleNamespace(item=SimpleNamespace(type="tool_call_item", raw_item=raw_item))
+        sentinel = RunItemStreamEvent(
+            name="tool_called",
+            item=ToolCallItem(agent=self.sender_agent, raw_item=raw_item),
+        )
         sentinel = add_agent_name_to_event(sentinel, sender_agent_name, None)
         await streaming_context.put_event(sentinel)
 

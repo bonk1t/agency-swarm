@@ -4,6 +4,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from agents import RunContextWrapper, RunResult
+from agents.items import ToolCallItem
+from agents.stream_events import RunItemStreamEvent
 from pydantic import Field
 
 from agency_swarm import Agent, BaseTool
@@ -212,6 +214,27 @@ async def test_send_message_target_agent_error(specific_send_message_tool, mock_
 
     assert result == expected_error_message
     mock_module_logger.error.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_emit_send_message_start_emits_event_with_type(specific_send_message_tool):
+    """SendMessage._emit_send_message_start should emit a run_item_stream_event sentinel."""
+    streaming_context = MagicMock()
+    streaming_context.put_event = AsyncMock()
+
+    await specific_send_message_tool._emit_send_message_start(
+        streaming_context=streaming_context,
+        sender_agent_name="SenderAgent",
+        thread_manager=None,
+        arguments_json="{}",
+    )
+
+    event = streaming_context.put_event.call_args[0][0]
+    assert isinstance(event, RunItemStreamEvent)
+    assert event.type == "run_item_stream_event"
+    assert event.name == "tool_called"
+    assert isinstance(event.item, ToolCallItem)
+    assert event.item.type == "tool_call_item"
 
 
 @pytest.mark.asyncio
