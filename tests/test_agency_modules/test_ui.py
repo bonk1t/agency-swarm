@@ -400,3 +400,56 @@ class TestAgencyVisualizationIntegration:
         # These assertions test the smart positioning logic
         assert manager_tool_pos["x"] > manager_pos["x"]  # Tool to the right of manager
         assert worker_tool_pos["y"] > worker_pos["y"]  # Tool below worker
+
+
+class TestMetadataDetails:
+    def test_get_agency_structure_tool_metadata(self):
+        """Agent and tool metadata should include descriptive fields."""
+        from agents import function_tool
+
+        @function_tool
+        def sample_tool():
+            """Sample tool description"""
+            return "done"
+
+        agent = Agent(name="ToolAgent", instructions="Do work", description="Tool agent")
+        # Assign tools after initialization to avoid validation
+        agent.tools = [sample_tool]
+
+        agency = Agency(agent)
+        structure = agency.get_agency_structure(include_tools=True)
+
+        agent_node = next(n for n in structure["nodes"] if n["id"] == "ToolAgent")
+        assert agent_node["data"]["toolCount"] == 1
+        assert agent_node["data"]["tools"][0]["name"] == "sample_tool"
+        assert "Sample tool description" in agent_node["data"]["tools"][0]["description"]
+
+        tool_node = next(n for n in structure["nodes"] if n["type"] == "tool")
+        assert tool_node["data"]["type"] == "FunctionTool"
+
+    def test_get_agency_structure_hosted_mcp_unique_labels(self):
+        """HostedMCPTool instances should be distinguished by server label."""
+
+        class DummyHostedMCPTool:
+            def __init__(self, label: str):
+                self.name = "hosted_mcp"
+                self.tool_config = {"server_label": label}
+                self.description = f"{label} description"
+
+        agent = Agent(name="SearchCoordinator", instructions="Coordinate", description="Coordinator")
+        agent.tools = [DummyHostedMCPTool("tavily-server"), DummyHostedMCPTool("youtube-server")]
+
+        agency = Agency(agent)
+        structure = agency.get_agency_structure(include_tools=True)
+
+        tool_nodes = [n for n in structure["nodes"] if n["type"] == "tool"]
+        tool_ids = {n["id"] for n in tool_nodes}
+
+        assert tool_ids == {
+            "SearchCoordinator_tavily-server",
+            "SearchCoordinator_youtube-server",
+        }
+
+        agent_node = next(n for n in structure["nodes"] if n["id"] == "SearchCoordinator")
+        tool_names = {t["name"] for t in agent_node["data"]["tools"]}
+        assert tool_names == {"tavily-server", "youtube-server"}
