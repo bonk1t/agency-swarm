@@ -61,8 +61,8 @@ class AgencyContext:
     agency_instance: Any
     thread_manager: "ThreadManager"
     subagents: dict[str, "Agent"]
-    load_threads_callback: Callable[[], dict[str, Any]] | None = None
-    save_threads_callback: Callable[[dict[str, Any]], None] | None = None
+    load_threads_callback: Callable[[], list[dict[str, Any]]] | None = None
+    save_threads_callback: Callable[[list[dict[str, Any]]], None] | None = None
     shared_instructions: str | None = None
 
 

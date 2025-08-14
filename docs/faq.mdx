@@ -40,7 +40,7 @@ Yes—you can use open source models for simple, non–mission-critical tasks (u
 
 
 <Accordion title="How do I save and continue conversations?" icon="messages">
-To persist threads between application restarts, implement thread callbacks that save and load thread IDs from a local file. For example, define your callback functions:
+To persist conversations between application restarts, implement callbacks that save and load the full message history from a local file. For example, define your callback functions:
 ```python
 import os
 import json
@@ -49,7 +49,7 @@ def load_threads(chat_id):
     if os.path.exists(f"{chat_id}_threads.json"):
         with open(f"{chat_id}_threads.json", "r") as file:
             return json.load(file)
-    return {}
+    return []
 
 def save_threads(new_threads, chat_id):
     with open(f"{chat_id}_threads.json", "w") as file:
@@ -58,14 +58,12 @@ def save_threads(new_threads, chat_id):
 
 Then, pass these callbacks during your agency initialization to resume conversations:
 ```python
-from agency_swarm.agency.genesis import GenesisAgency
+from agency_swarm import Agency
 
-agency = GenesisAgency(
-    ...
-    threads_callbacks={
-        'load': lambda: load_threads(chat_id),
-        'save': lambda new_threads: save_threads(new_threads, chat_id)
-    }
+agency = Agency(
+    ...,
+    load_threads_callback=lambda: load_threads(chat_id),
+    save_threads_callback=lambda new_threads: save_threads(new_threads, chat_id)
 )
 ```
 

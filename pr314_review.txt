@@ -60,3 +60,5 @@ File-by-file summary
 51. `docs/welcome/getting-started/genesis-agency.mdx` – Marks Genesis Agency as legacy. **Approved**
 52. `docs/welcome/overview.mdx` – Mentions Responses API and replaces state management card. **Approved**
 
+
+Update: load_threads callbacks return a flat list of message dicts; docs and type hints adjusted accordingly.
