@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from agents import HostedMCPTool, function_tool
 
 from agency_swarm import Agency, Agent
 from agency_swarm.ui import HTMLVisualizationGenerator, LayoutAlgorithms
@@ -21,6 +22,47 @@ def sample_agency():
 
     agency = Agency(ceo, communication_flows=[(ceo, manager), (manager, worker)])
     return agency
+
+
+@pytest.fixture
+def agency_with_tool():
+    """Agency with a single agent that has one tool."""
+
+    @function_tool
+    def sample_tool(text: str) -> str:
+        """Echo text."""
+        return text
+
+    agent = Agent(name="ToolAgent", instructions="Use the tool", tools=[sample_tool])
+    return Agency(agent, name="ToolAgency", shared_instructions="shared.md")
+
+
+@pytest.fixture
+def agency_with_mcp_tools():
+    """Agency with two HostedMCPTool instances to ensure unique metadata."""
+    agent = Agent(
+        name="SearchCoordinator",
+        instructions="Handle searches",
+        tools=[
+            HostedMCPTool(
+                tool_config={
+                    "type": "mcp",
+                    "server_label": "tavily-server",
+                    "server_url": "https://example.com/tavily",
+                    "require_approval": "never",
+                }
+            ),
+            HostedMCPTool(
+                tool_config={
+                    "type": "mcp",
+                    "server_label": "youtube-server",
+                    "server_url": "https://example.com/youtube",
+                    "require_approval": "never",
+                }
+            ),
+        ],
+    )
+    return Agency(agent)
 
 
 @pytest.fixture
@@ -338,7 +380,7 @@ class TestAgencyVisualizationIntegration:
 
         # Tool nodes and edges should be empty if no tools are added, which is fine
         tool_nodes = [n for n in structure["nodes"] if n["type"] == "tool"]
-        tool_edges = [e for e in structure["edges"] if e["type"] == "tool"]
+        tool_edges = [e for e in structure["edges"] if e["type"] == "owns"]
 
         # These should be lists, even if empty
         assert isinstance(tool_nodes, list)
@@ -353,7 +395,7 @@ class TestAgencyVisualizationIntegration:
         assert len(tool_nodes) == 0
 
         # Should only have communication edges
-        tool_edges = [e for e in structure["edges"] if e["type"] == "tool"]
+        tool_edges = [e for e in structure["edges"] if e["type"] == "owns"]
         assert len(tool_edges) == 0
 
     def test_get_agency_structure_hierarchical_layout(self, sample_agency):
@@ -366,6 +408,32 @@ class TestAgencyVisualizationIntegration:
             assert "position" in node
             assert "x" in node["position"]
             assert "y" in node["position"]
+
+    def test_get_agency_structure_rich_metadata(self, agency_with_tool):
+        """Ensure metadata includes tool details and agency info."""
+        structure = agency_with_tool.get_agency_structure()
+
+        # Agent node should contain detailed metadata
+        agent_node = next(n for n in structure["nodes"] if n["id"] == "ToolAgent")
+        data = agent_node["data"]
+        assert data["toolCount"] == 1
+        assert data["tools"][0]["name"] == "sample_tool"
+        assert data["instructions"].startswith("shared.md")
+
+        # Top-level metadata
+        meta = structure["metadata"]
+        assert meta["agencyName"] == "ToolAgency"
+        assert meta["layoutAlgorithm"] == "hierarchical"
+
+    def test_hosted_mcp_tools_unique_ids(self, agency_with_mcp_tools):
+        """HostedMCPTool instances should produce unique tool nodes."""
+        structure = agency_with_mcp_tools.get_agency_structure()
+
+        tool_nodes = [n for n in structure["nodes"] if n["type"] == "tool"]
+        ids = [n["id"] for n in tool_nodes]
+        assert len(ids) == len(set(ids))
+        labels = [n["data"]["label"] for n in tool_nodes]
+        assert "tavily-server" in labels and "youtube-server" in labels
 
     def test_layout_algorithms_manager_vs_leaf_positioning(self):
         """Test that manager agents and leaf agents position tools differently."""
