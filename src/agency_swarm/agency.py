@@ -840,102 +840,112 @@ class Agency:
         )
 
     def get_agency_structure(self, include_tools: bool = True) -> dict[str, Any]:
-        """
-        Returns a ReactFlow-compatible JSON structure representing the agency's organization.
+        """Return a ReactFlow-compatible JSON structure describing the agency."""
 
-        Args:
-            include_tools (bool): Whether to include agent tools as separate nodes
-
-        Returns:
-            dict: ReactFlow-compatible structure with nodes and edges
-        """
         from .ui.core.layout_algorithms import LayoutAlgorithms
 
-        nodes = []
-        edges = []
+        def _truncate(text: str, length: int = 100) -> str:
+            return text if len(text) <= length else text[:length] + "..."
 
-        # Create agent nodes
+        def _extract_tools(agent: Agent) -> list[dict[str, str]]:
+            tools_info: list[dict[str, str]] = []
+            if not agent.tools:
+                return tools_info
+            for tool in agent.tools:
+                tool_name = getattr(tool, "name", getattr(tool, "__name__", str(tool)))
+
+                if tool_name == "send_message":
+                    continue
+
+                # Differentiate hosted MCP tools by server label
+                if tool_name == "hosted_mcp" and hasattr(tool, "tool_config"):
+                    server_label = tool.tool_config.get("server_label")
+                    if server_label:
+                        tool_name = f"{tool_name}_{server_label}"
+
+                tool_type = getattr(tool, "type", tool.__class__.__name__)
+                description = getattr(tool, "description", "") or getattr(tool, "__doc__", "") or ""
+                tools_info.append(
+                    {
+                        "name": tool_name,
+                        "type": tool_type,
+                        "description": description,
+                    }
+                )
+            return tools_info
+
+        nodes: list[dict[str, Any]] = []
+        edges: list[dict[str, Any]] = []
+        total_tools = 0
+
         for agent_name, agent in self.agents.items():
-            # Check if this agent is an entry point
+            tools_info = _extract_tools(agent) if include_tools else []
+            total_tools += len(tools_info)
             is_entry_point = agent in self.entry_points
 
             node = {
                 "id": agent_name,
+                "type": "agent",
+                "position": {"x": 0, "y": 0},
                 "data": {
                     "label": agent_name,
-                    "description": agent.instructions[:100] + "..."
-                    if agent.instructions and len(agent.instructions) > 100
-                    else agent.instructions or "",
-                    "model": agent.model,
-                    "tools": [],
+                    "description": getattr(agent, "description", "") or "No description",
                     "isEntryPoint": is_entry_point,
+                    "toolCount": len(tools_info),
+                    "tools": tools_info,
+                    "instructions": _truncate(getattr(agent, "instructions", "") or ""),
+                    "model": agent.model,
+                    "hasSubagents": len(getattr(agent, "_subagents", {})) > 0,
                 },
-                "type": "agent",
-                "position": {"x": 0, "y": 0},  # Will be set by layout
             }
+            nodes.append(node)
 
-            # Add tools if requested
-            if include_tools and agent.tools:
-                for tool in agent.tools:
-                    # Get tool name - FunctionTool has 'name' attribute
-                    tool_name = getattr(tool, "name", getattr(tool, "__name__", str(tool)))
-
-                    # Skip send_message tools in visualization
-                    if tool_name == "send_message":
-                        continue
-
-                    node["data"]["tools"].append(tool_name)
-
-                    # Create tool node
+            if include_tools:
+                for idx, tool in enumerate(tools_info):
                     tool_node = {
-                        "id": f"{agent_name}_{tool_name}",
-                        "data": {
-                            "label": tool_name,
-                            "agentId": agent_name,
-                            "parentAgent": agent_name,  # Required for layout algorithm
-                        },
+                        "id": f"{agent_name}_tool_{idx}",
                         "type": "tool",
                         "position": {"x": 0, "y": 0},
+                        "data": {
+                            "label": tool["name"],
+                            "description": tool["description"],
+                            "type": tool["type"],
+                            "parentAgent": agent_name,
+                        },
                     }
                     nodes.append(tool_node)
 
-                    # Create tool edge
-                    tool_edge = {
-                        "id": f"{agent_name}-{tool_name}",
-                        "source": agent_name,
-                        "target": f"{agent_name}_{tool_name}",
-                        "type": "tool",
-                    }
-                    edges.append(tool_edge)
+                    edges.append(
+                        {
+                            "id": f"{agent_name}->{agent_name}_tool_{idx}",
+                            "source": agent_name,
+                            "target": f"{agent_name}_tool_{idx}",
+                            "type": "owns",
+                        }
+                    )
 
-            nodes.append(node)
-
-        # Create communication edges from flows
         for sender, receiver in self._derived_communication_flows:
-            edge = {
-                "id": f"{sender.name}-{receiver.name}",
-                "source": sender.name,
-                "target": receiver.name,
-                "type": "communication",
-            }
-            edges.append(edge)
+            edges.append(
+                {
+                    "id": f"{sender.name}->{receiver.name}",
+                    "source": sender.name,
+                    "target": receiver.name,
+                    "type": "communication",
+                    "data": {"label": "can send messages to", "bidirectional": False},
+                }
+            )
 
-        # Create metadata
         metadata = {
+            "agencyName": getattr(self, "name", None) or "Unnamed Agency",
             "totalAgents": len(self.agents),
-            "totalTools": sum(len(agent.tools) if agent.tools else 0 for agent in self.agents.values()),
+            "totalTools": total_tools,
             "entryPoints": [ep.name for ep in self.entry_points],
-            "layout": "hierarchical",
+            "sharedInstructions": self.shared_instructions or "",
+            "layoutAlgorithm": "hierarchical",
         }
 
-        # Create initial structure
-        agency_data = {
-            "nodes": nodes,
-            "edges": edges,
-            "metadata": metadata,
-        }
+        agency_data = {"nodes": nodes, "edges": edges, "metadata": metadata}
 
-        # Apply layout
         layout = LayoutAlgorithms()
         return layout.apply_layout(agency_data)
 

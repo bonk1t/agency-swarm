@@ -367,6 +367,29 @@ class TestAgencyVisualizationIntegration:
             assert "x" in node["position"]
             assert "y" in node["position"]
 
+    def test_get_agency_structure_handles_hosted_mcp_tools(self):
+        """Ensure hosted MCP tools produce unique nodes and labels."""
+
+        class DummyMCPTool:
+            def __init__(self, label: str):
+                self.name = "hosted_mcp"
+                self.tool_config = {"server_label": label}
+                self.type = "HostedMCPTool"
+                self.description = f"MCP server {label}"
+
+        agent = Agent(name="SearchCoordinator", instructions="Coordinate searches")
+        agent.tools = [DummyMCPTool("tavily-server"), DummyMCPTool("youtube-server")]
+
+        agency = Agency(agent)
+        structure = agency.get_agency_structure(include_tools=True)
+
+        tool_nodes = [n for n in structure["nodes"] if n["type"] == "tool"]
+        assert len(tool_nodes) == 2
+        assert len({n["id"] for n in tool_nodes}) == 2
+        labels = {n["data"]["label"] for n in tool_nodes}
+        assert "hosted_mcp_tavily-server" in labels
+        assert "hosted_mcp_youtube-server" in labels
+
     def test_layout_algorithms_manager_vs_leaf_positioning(self):
         """Test that manager agents and leaf agents position tools differently."""
         # Create a more complex structure with manager and leaf agents
