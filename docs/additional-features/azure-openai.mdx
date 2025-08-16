@@ -32,7 +32,7 @@ from openai import AzureOpenAI
 from agency_swarm import set_openai_client
 import os
 
-client = AzureOpenAI(
+azure_client = AzureOpenAI(
     api_key=os.getenv("AZURE_OPENAI_KEY"),
     api_version="2024-02-15-preview",
     azure_endpoint=os.getenv("AZURE_ENDPOINT"),
@@ -40,7 +40,7 @@ client = AzureOpenAI(
     max_retries=5,
 )
 
-set_openai_client(client)
+set_openai_client(azure_client)
 ```
 
 
@@ -48,7 +48,7 @@ set_openai_client(client)
 
 <Step title="Update Agent Model Parameters">
 
-Replace the `model` parameter inside each agent with your model deployment name from Azure.t:
+Replace the `model` parameter inside each agent with your model deployment name from Azure:
 
 ```python
 from agency_swarm import Agent
@@ -60,7 +60,7 @@ ceo = Agent(
 )
 ```
 <Note>
-Model deployment name might be different from the stadard OpenAI model names. It is set by you when you deploy a model to Azure.
+Model deployment name might be different from the standard OpenAI model names. It is set by you when you deploy a model to Azure.
 </Note>
 
 </Step>
