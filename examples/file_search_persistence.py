@@ -56,9 +56,16 @@ async def run_hosted_tool_preservation_demo():
     # Create test data file
     with tempfile.TemporaryDirectory(prefix="hosted_tool_test_") as test_data_dir_str:
         test_data_dir = Path(test_data_dir_str)
-        test_file = test_data_dir / "sales_report.txt"
-        test_file.write_text("""
-QUARTERLY SALES REPORT Q4 2024
+        test_file = test_data_dir / "sales_report.pdf"
+        from fpdf import FPDF
+
+        pdf = FPDF()
+        pdf.add_page()
+        pdf.set_font("Arial", size=12)
+        pdf.multi_cell(
+            0,
+            10,
+            """QUARTERLY SALES REPORT Q4 2024
 
 Performance Metrics:
 - Total Revenue: $5,678,901.23
@@ -75,8 +82,9 @@ Top Products:
 Regional Performance:
 - North America: $2,890,123.45
 - Europe: $1,567,890.12
-- Asia Pacific: $1,220,887.66
-""")
+- Asia Pacific: $1,220,887.66""",
+        )
+        pdf.output(str(test_file))
 
         # Create agent with FileSearch capability
         file_search_agent = Agent(
@@ -85,6 +93,8 @@ Regional Performance:
             files_folder=str(test_data_dir),
             model_settings=ModelSettings(temperature=0.0),
         )
+        if file_search_agent._associated_vector_store_id:
+            file_search_agent.file_manager.add_file_search_tool(file_search_agent._associated_vector_store_id)
 
         # Create agency with hosted tool agent
         hosted_tool_agency = Agency(

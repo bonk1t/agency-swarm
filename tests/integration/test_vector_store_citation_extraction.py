@@ -30,19 +30,25 @@ async def test_vector_store_citation_extraction():
     # Create temporary directory and test file
     with tempfile.TemporaryDirectory() as temp_dir:
         temp_path = Path(temp_dir)
-        test_file = temp_path / "research_document.txt"
+        test_file = temp_path / "research_document.pdf"
+        from fpdf import FPDF
 
-        # Create a test document with specific content
-        test_content = """RESEARCH REPORT - TEST DATA
+        pdf = FPDF()
+        pdf.add_page()
+        pdf.set_font("Arial", size=12)
+        pdf.multi_cell(
+            0,
+            10,
+            """RESEARCH REPORT - TEST DATA
 
 Project Code: TEST-123
 Researcher: Dr. Jane Smith
 Badge Number: 9876
 Experiment Results: Compound XYZ-456 synthesized successfully
 Yield Efficiency: 95.2%
-Equipment Status: Mass Spectrometer operational
-"""
-        test_file.write_text(test_content)
+Equipment Status: Mass Spectrometer operational""",
+        )
+        pdf.output(str(test_file))
 
         # Create agent with FileSearch capability and citations enabled
         search_agent = Agent(
@@ -54,6 +60,8 @@ Equipment Status: Mass Spectrometer operational
             files_folder=str(temp_path),
             include_search_results=True,
         )
+        if search_agent._associated_vector_store_id:
+            search_agent.file_manager.add_file_search_tool(search_agent._associated_vector_store_id)
 
         # Create agency
         agency = Agency(

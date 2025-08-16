@@ -88,7 +88,7 @@ def test_agent_initialization_with_all_parameters():
     tool1 = MagicMock(spec=FunctionTool)
     tool1.name = "tool1"
 
-    # TEST-ONLY SETUP: Create test directory to enable FileSearchTool auto-addition
+    # TEST-ONLY SETUP: Create test directory for files_folder functionality
     import tempfile
     from pathlib import Path
     from unittest.mock import PropertyMock, patch
@@ -130,7 +130,7 @@ def test_agent_initialization_with_all_parameters():
         assert agent.model == "gpt-4.1"
         assert len(agent.tools) == 2
         assert agent.tools[0] == tool1
-        assert agent.tools[1].__class__.__name__ == "FileSearchTool"
+        assert agent.tools[1].__class__.__name__ == "CodeInterpreterTool"
         # response_validator is completely removed
         assert not hasattr(agent, "response_validator")
         assert agent.output_type == TaskOutput

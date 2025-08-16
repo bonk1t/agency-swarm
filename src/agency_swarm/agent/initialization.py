@@ -126,8 +126,7 @@ def handle_deprecated_parameters(kwargs: dict[str, Any]) -> dict[str, Any]:
 
     if "file_search" in kwargs:
         warnings.warn(
-            "'file_search' parameter is deprecated. FileSearchTool is added automatically "
-            "if 'files_folder' indicates a Vector Store.",
+            "'file_search' parameter is deprecated. FileSearchTool must be added manually if desired.",
             DeprecationWarning,
             stacklevel=3,
         )

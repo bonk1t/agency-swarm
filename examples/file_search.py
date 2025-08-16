@@ -3,7 +3,7 @@
 Simple FileSearch Example - Agency Swarm v1.x
 
 This example demonstrates how to use the FileSearch tool with citations.
-The agent automatically creates a vector store and indexes files for search.
+The agent indexes PDF files for search; FileSearch must be added explicitly.
 """
 
 import asyncio
@@ -28,13 +28,13 @@ async def main():
     examples_dir = Path(__file__).parent
     docs_dir = examples_dir / "data"
 
-    if not docs_dir.exists() or not list(docs_dir.glob("*.txt")):
-        print(f"❌ Error: No .txt files found in: {docs_dir}")
-        print("   Please ensure there are research files in the data directory.")
+    if not docs_dir.exists() or not list(docs_dir.glob("*.pdf")):
+        print(f"❌ Error: No .pdf files found in: {docs_dir}")
+        print("   Please ensure there are PDF files in the data directory.")
         return
 
-    txt_files = list(docs_dir.glob("*.txt"))
-    print(f"📁 Found {len(txt_files)} research file(s) in: {docs_dir}")
+    pdf_files = list(docs_dir.glob("*.pdf"))
+    print(f"📁 Found {len(pdf_files)} PDF file(s) in: {docs_dir}")
 
     # Create an agent that can search files with citations
     search_agent = Agent(
@@ -43,6 +43,9 @@ async def main():
         files_folder=str(docs_dir),
         include_search_results=True,  # Enable citation extraction
     )
+    # FileSearch is no longer added automatically; add it explicitly
+    if search_agent._associated_vector_store_id:
+        search_agent.file_manager.add_file_search_tool(search_agent._associated_vector_store_id)
 
     # Create agency
     agency = Agency(
@@ -55,7 +58,7 @@ async def main():
     await asyncio.sleep(3)
 
     # Test search with a specific question
-    question = "What is the badge number for Marcus Chen?"
+    question = "What is the secret phrase in the PDF file?"
     print(f"\n❓ Question: {question}")
 
     try:
@@ -67,7 +70,7 @@ async def main():
         display_citations(citations, "vector store")
 
         # Check if we got the expected answer
-        if "7401" in response.final_output:
+        if "FIRST PDF SECRET PHRASE" in response.final_output.upper():
             print("✅ Correct answer found!")
         else:
             print("ℹ️  Try different questions from the research data")
@@ -76,7 +79,7 @@ async def main():
         print(f"❌ Error: {e}")
 
     print("\n🎯 Usage Tips:")
-    print("   • Add more .txt files to the data/ directory")
+    print("   • Add more .pdf files to the data/ directory")
     print("   • Citations show which files contain the answers")
     print("   • Vector store persists between runs")
 

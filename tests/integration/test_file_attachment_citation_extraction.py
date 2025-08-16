@@ -35,25 +35,33 @@ async def test_file_attachment_citation_extraction():
         # Create test document with specific content
         with tempfile.TemporaryDirectory(prefix="file_attachment_citation_test_") as temp_dir_str:
             temp_dir = Path(temp_dir_str)
-            test_file = temp_dir / "quarterly_report.txt"
-            test_file.write_text("""
-            COMPANY QUARTERLY REPORT Q3 2024
+            test_file = temp_dir / "quarterly_report.pdf"
+            from fpdf import FPDF
 
-            Financial Summary:
-            - Revenue: $8,456,789.12
-            - Expenses: $3,234,567.89
-            - Net Income: $5,222,221.23
+            pdf = FPDF()
+            pdf.add_page()
+            pdf.set_font("Arial", size=12)
+            pdf.multi_cell(
+                0,
+                10,
+                """COMPANY QUARTERLY REPORT Q3 2024
 
-            Employee Information:
-            - Total Staff: 847 employees
-            - New Hires: 23 people
-            - Departments: Engineering, Sales, Marketing
+Financial Summary:
+- Revenue: $8,456,789.12
+- Expenses: $3,234,567.89
+- Net Income: $5,222,221.23
 
-            Product Performance:
-            - Product X: 145% growth
-            - Product Y: 89% growth
-            - Product Z: 67% growth
-            """)
+Employee Information:
+- Total Staff: 847 employees
+- New Hires: 23 people
+- Departments: Engineering, Sales, Marketing
+
+Product Performance:
+- Product X: 145% growth
+- Product Y: 89% growth
+- Product Z: 67% growth""",
+            )
+            pdf.output(str(test_file))
 
             # Create agent for direct file attachment processing
             agent = Agent(
@@ -137,8 +145,8 @@ async def test_file_attachment_citation_extraction():
                     f"Expected valid file_id format, got {citation['file_id']}"
                 )
                 # Note: OpenAI may use a different filename internally than what we specify
-                assert citation["filename"].endswith(".txt"), (
-                    f"Expected filename to end with .txt, got {citation['filename']}"
+                assert citation["filename"].endswith(".pdf"), (
+                    f"Expected filename to end with .pdf, got {citation['filename']}"
                 )
                 assert citation["type"] == "file_citation", f"Expected type file_citation, got {citation['type']}"
                 assert isinstance(citation["index"], int), f"Expected index to be int, got {type(citation['index'])}"
@@ -172,12 +180,21 @@ async def test_file_attachment_vs_vector_store_citation_distinction():
         # Create separate directories to avoid conflicts
         vector_dir = temp_dir / "vector_files"
         vector_dir.mkdir(exist_ok=True)
-        vector_file = vector_dir / "vector_document.txt"
-        vector_file.write_text("Test content for citation comparison with ID: CC-2024-789")
+        vector_file = vector_dir / "vector_document.pdf"
+        attachment_file = temp_dir / "attachment_document.pdf"
+        from fpdf import FPDF
 
-        # Create a separate file for direct attachment to avoid conflicts
-        attachment_file = temp_dir / "attachment_document.txt"
-        attachment_file.write_text("Test content for citation comparison with ID: CC-2024-789")
+        pdf1 = FPDF()
+        pdf1.add_page()
+        pdf1.set_font("Arial", size=12)
+        pdf1.multi_cell(0, 10, "Test content for citation comparison with ID: CC-2024-789")
+        pdf1.output(str(vector_file))
+
+        pdf2 = FPDF()
+        pdf2.add_page()
+        pdf2.set_font("Arial", size=12)
+        pdf2.multi_cell(0, 10, "Test content for citation comparison with ID: CC-2024-789")
+        pdf2.output(str(attachment_file))
 
         # Create agent with files_folder (vector store)
         vector_agent = Agent(
@@ -187,6 +204,8 @@ async def test_file_attachment_vs_vector_store_citation_distinction():
             model="gpt-4.1",
             model_settings=ModelSettings(temperature=0.0),  # DETERMINISTIC
         )
+        if vector_agent._associated_vector_store_id:
+            vector_agent.file_manager.add_file_search_tool(vector_agent._associated_vector_store_id)
 
         # Create agent for direct file attachments
         attachment_agent = Agent(

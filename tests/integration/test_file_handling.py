@@ -182,32 +182,34 @@ async def test_multi_file_type_processing(real_openai_client: AsyncOpenAI, tmp_p
 
 
 async def _setup_file_search_agent(real_openai_client: AsyncOpenAI, tmp_path: Path):
-    """Helper to set up file search agent with test file."""
-    test_txt_path = Path("tests/data/files/favorite_books.txt")
-    assert test_txt_path.exists(), f"Test file not found at {test_txt_path}"
+    """Helper to set up file search agent with test PDF file."""
+    test_pdf_path = Path("tests/data/files/test-pdf.pdf")
+    assert test_pdf_path.exists(), f"Test file not found at {test_pdf_path}"
 
     # Use pytest tmp_path for isolation
     tmp_dir = tmp_path / "file_search_test"
     tmp_dir.mkdir(exist_ok=True)
-    tmp_file_path = tmp_dir / "favorite_books.txt"
-    shutil.copy(test_txt_path, tmp_file_path)
+    tmp_file_path = tmp_dir / "test-pdf.pdf"
+    shutil.copy(test_pdf_path, tmp_file_path)
 
     file_search_agent = Agent(
         name="FileSearchAgent",
-        instructions="""You are an agent that can read and analyze text files using FileSearch.
+        instructions="""You are an agent that can read and analyze PDF files using FileSearch.
         When asked questions about files, always use your FileSearch tool to search through the uploaded documents.
         Be direct and specific in your answers based on what you find in the files.""",
         model_settings=ModelSettings(temperature=0.0),
         files_folder=tmp_dir,
     )
     file_search_agent._openai_client = real_openai_client
+    if file_search_agent._associated_vector_store_id:
+        file_search_agent.file_manager.add_file_search_tool(file_search_agent._associated_vector_store_id)
 
     # Find vector store folder
     candidates = list(tmp_dir.parent.glob(f"{tmp_dir.name}_vs_*"))
     folder_path = candidates[0] if candidates else None
     assert folder_path, "No vector store folder found"
 
-    return file_search_agent, folder_path, tmp_file_path, test_txt_path
+    return file_search_agent, folder_path, tmp_file_path, test_pdf_path
 
 
 async def _wait_for_vector_store(real_openai_client: AsyncOpenAI, agent):
@@ -257,8 +259,8 @@ async def _cleanup_file_search_resources(real_openai_client: AsyncOpenAI, folder
 
 @pytest.mark.asyncio
 async def test_file_search_tool(real_openai_client: AsyncOpenAI, tmp_path: Path):
-    """Tests that an agent can use FileSearch tool to process files."""
-    file_search_agent, folder_path, tmp_file_path, test_txt_path = await _setup_file_search_agent(
+    """Tests that an agent can use FileSearch tool to process PDF files."""
+    file_search_agent, folder_path, tmp_file_path, test_pdf_path = await _setup_file_search_agent(
         real_openai_client, tmp_path
     )
 
@@ -267,20 +269,18 @@ async def test_file_search_tool(real_openai_client: AsyncOpenAI, tmp_path: Path)
 
         # Initialize agency and run test
         agency = Agency(file_search_agent, user_context=None)
-        question = (
-            "What is the title of the 4th book in the favorite books list? Please search the file to find the answer."
-        )
+        question = "What is the secret phrase in the PDF file?"
 
         try:
             response_result = await agency.get_response(question)
             assert response_result is not None
-            print(f"Response for {test_txt_path.name}: {response_result.final_output}")
+            print(f"Response for {test_pdf_path.name}: {response_result.final_output}")
 
             # Verify FileSearch was used and expected content found
-            final_output_lower = response_result.final_output.lower()
-            hobbit_found = any(term in final_output_lower for term in ["hobbit", "the hobbit", "j.r.r. tolkien"])
+            final_output_upper = response_result.final_output.upper()
+            secret_found = "FIRST PDF SECRET PHRASE" in final_output_upper
 
-            if not hobbit_found:
+            if not secret_found:
                 print("Expected content not found, checking if FileSearch was used")
                 tool_calls_made = [
                     item for item in response_result.new_items if hasattr(item, "tool_calls") and item.tool_calls
@@ -292,7 +292,7 @@ async def test_file_search_tool(real_openai_client: AsyncOpenAI, tmp_path: Path)
                 if not file_search_used:
                     print("FileSearch tool was not used, this may explain why the answer wasn't found")
 
-            assert hobbit_found, f"Expected 'hobbit' or related terms not found in: {response_result.final_output}"
+            assert secret_found, f"Expected secret phrase not found in: {response_result.final_output}"
 
         except Exception as e:
             # Handle 404 errors with retry
@@ -305,9 +305,9 @@ async def test_file_search_tool(real_openai_client: AsyncOpenAI, tmp_path: Path)
                 assert response_result is not None
                 print(f"Response (retry): {response_result.final_output}")
 
-                final_output_lower = response_result.final_output.lower()
-                hobbit_found = any(term in final_output_lower for term in ["hobbit", "the hobbit", "j.r.r. tolkien"])
-                assert hobbit_found, f"Expected 'hobbit' terms not found in retry: {response_result.final_output}"
+                final_output_upper = response_result.final_output.upper()
+                secret_found = "FIRST PDF SECRET PHRASE" in final_output_upper
+                assert secret_found, f"Expected secret phrase not found in retry: {response_result.final_output}"
             else:
                 raise
 

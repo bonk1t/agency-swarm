@@ -80,7 +80,7 @@ class Agent(BaseAgent[MasterContext]):
         files_folder (str | Path | None): Path to a local folder for managing files associated with this agent.
                                           If the folder name follows the pattern `*_vs_<vector_store_id>`,
                                           files uploaded via `upload_file` will also be added to the specified
-                                          OpenAI Vector Store, and a `FileSearchTool` will be automatically added.
+                                          OpenAI Vector Store.
         tools_folder (str | Path | None): Path to a directory containing tool definitions. Tools are automatically
                                            discovered and loaded from this directory. Supports both BaseTool
                                            subclasses and FunctionTool instances. Python files starting with
@@ -148,8 +148,7 @@ class Agent(BaseAgent[MasterContext]):
             output_guardrails (list[OutputGuardrail] | None): Output validation rules.
             mcp_servers (list[MCPServer] | None): Model Context Protocol servers.
             files_folder (str | Path | None): Path to a folder of files associated with this agent. If the folder name
-                matches `*_vs_<vector_store_id>`, uploaded files are added to the specified OpenAI Vector Store and a
-                FileSearch tool is added automatically.
+                matches `*_vs_<vector_store_id>`, uploaded files are added to the specified OpenAI Vector Store.
             tools_folder (str | Path | None): Path to a directory containing tool definitions.
             schemas_folder (str | Path | list[str | Path] | None): Path(s) to directories containing OpenAPI schema
                 files for automatic tool generation.

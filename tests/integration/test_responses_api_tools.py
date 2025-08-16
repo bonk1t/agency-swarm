@@ -274,9 +274,16 @@ async def test_hosted_tool_output_preservation_multi_turn():
     # Create test data with specific content
     with tempfile.TemporaryDirectory(prefix="hosted_tool_test_") as temp_dir_str:
         temp_dir = Path(temp_dir_str)
-        test_file = temp_dir / "company_data.txt"
-        test_file.write_text("""
-COMPANY FINANCIAL REPORT
+        test_file = temp_dir / "company_data.pdf"
+        from fpdf import FPDF
+
+        pdf = FPDF()
+        pdf.add_page()
+        pdf.set_font("Arial", size=12)
+        pdf.multi_cell(
+            0,
+            10,
+            """COMPANY FINANCIAL REPORT
 
 Revenue Information:
 - Q4 Revenue: $7,892,345.67
@@ -292,8 +299,9 @@ Employee Data:
 Product Sales:
 - Product Alpha: 12,345 units
 - Product Beta: 6,789 units
-- Product Gamma: 2,345 units
-""")
+- Product Gamma: 2,345 units""",
+        )
+        pdf.output(str(test_file))
 
         # Create Agency Swarm agent with FileSearch via files_folder
         agent = AgencySwarmAgent(
@@ -307,6 +315,8 @@ Product Sales:
             files_folder=str(temp_dir),
             include_search_results=True,
         )
+        if agent._associated_vector_store_id:
+            agent.file_manager.add_file_search_tool(agent._associated_vector_store_id)
 
         # Create an agency with the agent
         agency = Agency(agent)
