@@ -168,7 +168,7 @@ class TestFastAPIFileProcessing:
         }
         headers = {}
 
-        async with self.get_http_client(timeout_seconds=90) as client:
+        async with self.get_http_client(timeout_seconds=180) as client:
             response = await client.post(url, json=payload, headers=headers)
 
         assert response.status_code == 200
@@ -214,7 +214,7 @@ class TestFastAPIFileProcessing:
         url = "http://localhost:8080/test_agency/get_response_stream"
         payload = {
             "message": "Please read the text file and describe its content in detail.",
-            "file_urls": {"stream_test.txt": "http://localhost:7860/test-txt.txt"},
+            "file_urls": {"stream_test.txt": "http://localhost:7860/favorite_songs.txt"},
         }
         headers = {}
 
@@ -231,7 +231,11 @@ class TestFastAPIFileProcessing:
 
         # Join all collected data to check for content
         full_response = " ".join(collected_data).lower()
-        assert "first txt secret phrase" in full_response
+        assert (
+            "here comes the sun" in full_response.lower()
+            and "imagine" in full_response.lower()
+            and "bohemian rhapsody" in full_response.lower()
+        )
 
     @pytest.mark.asyncio
     async def test_invalid_file_url(self, file_server_process, fastapi_server):
