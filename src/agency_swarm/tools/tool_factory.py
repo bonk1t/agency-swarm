@@ -1,4 +1,5 @@
 import asyncio
+import functools
 import importlib.util
 import inspect
 import json
@@ -6,18 +7,19 @@ import logging
 import sys
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, Union
 
-import httpx
 import jsonref
-from agents import FunctionTool
-from agents.exceptions import ModelBehaviorError
-from agents.run_context import RunContextWrapper
+from agents import Agent as BaseAgent, FunctionTool, RunContextWrapper, set_tracing_disabled
+from agents.mcp.server import MCPServer
+from agents.mcp.util import MCPUtil
 from agents.strict_schema import ensure_strict_json_schema
-from pydantic import BaseModel, ValidationError
 
 from .base_tool import BaseTool
-from .utils import generate_model_from_schema
+from .utils import create_invoke_for_path, generate_model_from_schema
+
+if TYPE_CHECKING:
+    from agency_swarm import Agent
 
 logger = logging.getLogger(__name__)
 
@@ -221,8 +223,9 @@ class ToolFactory:
                     tool_schema = ensure_strict_json_schema(tool_schema)
 
                 # Callback factory (captures current verb & path)
-                on_invoke_tool = ToolFactory._create_invoke_for_path(
-                    path, verb, openapi, tool_schema, function_name, headers, params, timeout
+                param_model, request_body_model = ToolFactory.from_openai_schema(tool_schema, function_name)
+                on_invoke_tool = create_invoke_for_path(
+                    path, verb, openapi, param_model, request_body_model, headers, params, timeout
                 )
 
                 tool = FunctionTool(
@@ -237,102 +240,92 @@ class ToolFactory:
         return tools
 
     @staticmethod
-    def _create_invoke_for_path(path, verb, openapi, tool_schema, function_name, headers=None, params=None, timeout=90):
-        """
-        Creates a callback function for a specific path and method.
-        This is a factory function that captures the current values of path and method.
+    def from_mcp(
+        mcp_servers: list[MCPServer],
+        convert_schemas_to_strict: bool = False,
+        context: RunContextWrapper[Any] | None = None,
+        agent: Union["Agent", None] = None,
+    ):
+        """Fetch the tools from an MCP server and convert them to FunctionTools.
+        Wraps the tools' on_invoke_tool method to add mcp connection management.
 
-        Parameters:
-            path: The path to create the callback for.
-            verb: The HTTP method to use.
-            openapi: The OpenAPI specification.
-            tool_schema: The schema for the tool.
-            function_name: The function/operation name.
-            headers: Headers to include in the request.
-            params: Additional parameters to include in the request.
-            timeout: HTTP timeout in seconds.
+        Args:
+            mcp_server: The MCP server to fetch the tools from.
 
         Returns:
-            An async callback function that makes the appropriate HTTP request.
+            A list of FunctionTools available on the MCP server.
         """
-        param_model, request_body_model = ToolFactory.from_openai_schema(tool_schema, function_name)
-        fixed_params = params or {}
+        # Temporarily disable tracing to avoid sdk logging a non-existent error
+        set_tracing_disabled(True)
 
-        async def _invoke(
-            ctx: RunContextWrapper[Any],
-            input: str,
-            *,
-            verb_: str = verb,
-            path_: str = path,
-            param_model_: type[BaseModel] = param_model,
-            request_body_model_: type[BaseModel] = request_body_model,
+        if isinstance(mcp_servers, MCPServer):
+            mcp_servers = [mcp_servers]
+
+        async def fetch_tools(
+            mcp_servers: list[MCPServer],
+            convert_schemas_to_strict: bool = False,
+            context: RunContextWrapper[Any] | None = None,
+            agent: Union["Agent", None] = None,
         ):
-            """Actual HTTP call executed by the agent."""
-            payload = json.loads(input) if input else {}
+            # SDK has an oversight preventing static tool filtering without passing an agent and context
+            run_context = context or RunContextWrapper(context=None)
+            agent = agent or BaseAgent(name="dummy_agent")
 
-            # split out parts for old-style structure
-            param_container: dict[str, Any] = payload.get("parameters", {})
+            # Connect all servers
+            for server in mcp_servers:
+                await server.connect()
 
-            if param_model_:
-                # Validate parameters
-                try:
-                    parsed = param_model_(**param_container) if param_container else param_model_()
-                    param_container = parsed.model_dump()
-                except ValidationError as e:
-                    raise ModelBehaviorError(
-                        f"Invalid JSON input in parameters for tool {param_model_.__name__}: {e}"
-                    ) from e
+            tools = await MCPUtil.get_all_function_tools(mcp_servers, convert_schemas_to_strict, run_context, agent)
 
-            body_payload = payload.get("requestBody")
+            # Cleanup all servers
+            for server in mcp_servers:
+                await server.cleanup()
 
-            if request_body_model_:
-                # Validate request body
-                try:
-                    parsed = request_body_model_(**body_payload) if body_payload else request_body_model_()
-                    body_payload = parsed.model_dump()
-                except ValidationError as e:
-                    raise ModelBehaviorError(
-                        f"Invalid JSON input in request body for tool {request_body_model_.__name__}: {e}"
-                    ) from e
+            return tools
 
-            url = f"{openapi['servers'][0]['url']}{path_}"
-            for key, val in param_container.items():
-                token = f"{{{key}}}"
-                if token in url:
-                    url = url.replace(token, str(val))
-                    # null-out so it doesn't go into query string
-                    param_container[key] = None
-            url = url.rstrip("/")
+        converted_tools = []
 
-            query_params = {k: v for k, v in param_container.items() if v is not None}
-            if fixed_params:
-                query_params = {**query_params, **fixed_params}
+        for server in mcp_servers:
+            # Handle both sync and async contexts
+            try:
+                # Check if we're already in an event loop
+                asyncio.get_running_loop()
+                # If we're here, we're in a loop - use nest_asyncio to allow nested loops
+                import nest_asyncio
+                nest_asyncio.apply()
+                tools = asyncio.run(fetch_tools([server], convert_schemas_to_strict, context, agent))
+            except RuntimeError:
+                # No running loop, we can use asyncio.run()
+                tools = asyncio.run(fetch_tools([server], convert_schemas_to_strict, context, agent))
 
-            json_body = body_payload if verb_.lower() in {"post", "put", "patch", "delete"} else None
+            set_tracing_disabled(False)
 
-            logger.info(f"Calling URL: {url}\nQuery Params: {query_params}\nJSON Body: {json_body}")
+            # Create wrapper function that handles connection management
+            def create_wrapped_invoke(original_invoke, server):
+                @functools.wraps(original_invoke)
+                async def wrapped_invoke(*args, **kwargs):
+                    await server.connect()
+                    try:
+                        result = await original_invoke(*args, **kwargs)
+                        return result
+                    finally:
+                        await server.cleanup()
 
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                resp = await client.request(
-                    verb_.upper(),
-                    url,
-                    params=query_params,
-                    json=json_body,
-                    headers=headers,
-                )
-                try:
-                    logger.info(f"Response from {url}: {resp.json()}")
-                    return resp.json()
-                except Exception:
-                    return resp.text
+                return wrapped_invoke
 
-        return _invoke
+            # Wrap each tool's on_invoke_tool method
+            for tool in tools:
+                tool.on_invoke_tool = create_wrapped_invoke(tool.on_invoke_tool, server)
+
+            converted_tools.extend(tools)
+
+        return converted_tools
 
     @staticmethod
     def from_file(file_path: str | Path) -> list[type[BaseTool] | FunctionTool]:
         """Dynamically imports a BaseTool class from a Python file within a package structure.
 
-        Parameters:
+        Args:
             file_path: The file path to the Python file containing the BaseTool class.
 
         Returns:

@@ -22,7 +22,7 @@ from agency_swarm.agent import (
 from agency_swarm.agent.agent_flow import AgentFlow
 from agency_swarm.agent.attachment_manager import AttachmentManager
 from agency_swarm.agent.file_manager import AgentFileManager
-from agency_swarm.agent.tools import _attach_one_call_guard
+from agency_swarm.agent.tools import _attach_one_call_guard, load_mcp_tools
 from agency_swarm.context import MasterContext
 from agency_swarm.tools.concurrency import ToolConcurrencyManager
 from agency_swarm.utils.thread import ThreadManager
@@ -119,6 +119,8 @@ class Agent(BaseAgent[MasterContext]):
             tools_folder (str | Path | None): Directory for automatic tool discovery and loading.
             schemas_folder (str | Path | list[str | Path] | None): Directories containing OpenAPI schema files
                 for automatic tool generation.
+            mcp_servers (list[MCPServer] | None): Model Context Protocol servers.
+            mcp_config (MCPConfig | None): MCP server configuration.
             api_headers (dict[str, dict[str, str]] | None): Per-schema headers for OpenAPI tools. Format:
                 {"schema_filename.json": {"header_name": "header_value"}}.
             api_params (dict[str, dict[str, Any]] | None): Per-schema parameters for OpenAPI tools. Format:
@@ -133,8 +135,6 @@ class Agent(BaseAgent[MasterContext]):
             model (str | Model | None): Model identifier (e.g., "gpt-4o") or Model instance.
             model_settings (ModelSettings | None): Model configuration (temperature, max_tokens, etc.).
             tools (list[Tool] | None): Tool instances for the agent. Defaults to empty list.
-            mcp_servers (list[MCPServer] | None): Model Context Protocol servers.
-            mcp_config (MCPConfig | None): MCP server configuration.
             input_guardrails (list[InputGuardrail] | None): Pre-execution validation checks.
             output_guardrails (list[OutputGuardrail] | None): Post-execution validation checks.
             output_type (type[Any] | AgentOutputSchemaBase | None): Type of agent's final output.
@@ -212,6 +212,9 @@ class Agent(BaseAgent[MasterContext]):
         self.file_manager._parse_files_folder_for_vs_id()
         parse_schemas(self)
         load_tools_from_folder(self)
+        if self.mcp_servers:
+            load_mcp_tools(self)
+            self.mcp_servers = []  # Remove servers as they are now loaded as tools
 
         # Wrap any FunctionTool instances that were provided directly via constructor
         for tool in self.tools:
