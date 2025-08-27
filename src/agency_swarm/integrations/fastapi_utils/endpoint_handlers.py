@@ -31,7 +31,7 @@ def get_verify_token(app_token):
 
 
 # Non‑streaming response endpoint
-def make_response_endpoint(request_model, agency_factory: Callable[..., Agency], verify_token):
+def make_response_endpoint(request_model, agency_instance: Agency, verify_token):
     async def handler(request: request_model, token: str = Depends(verify_token)):
         if request.chat_history is not None:
             # Chat history is now a flat list
@@ -50,7 +50,11 @@ def make_response_endpoint(request_model, agency_factory: Callable[..., Agency],
             except Exception as e:
                 return {"error": f"Error downloading file from provided urls: {e}"}
 
-        agency_instance = agency_factory(load_threads_callback=load_callback)
+        # agency_instance = agency_factory(load_threads_callback=load_callback)
+        agency_instance.thread_manager._load_threads_callback = load_callback
+        agency_instance.thread_manager.init_messages()
+        from agency_swarm.agency.setup import initialize_agent_contexts
+        initialize_agent_contexts(agency_instance, load_callback)
 
         # Capture initial message count to identify new messages
         initial_message_count = len(agency_instance.thread_manager.get_all_messages())

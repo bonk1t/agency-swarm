@@ -98,7 +98,7 @@ def run_fastapi(
     agency_names = []
 
     if agencies:
-        for agency_name, agency_factory in agencies.items():
+        for agency_name, agency_instance in agencies.items():
             if agency_name is None or agency_name == "":
                 agency_name = "agency"
             agency_name = agency_name.replace(" ", "_")
@@ -110,7 +110,7 @@ def run_fastapi(
             agency_names.append(agency_name)
 
             # Store agent instances for easy lookup
-            preview_instance = agency_factory(load_threads_callback=lambda: [])
+            preview_instance = agency_instance#(load_threads_callback=lambda: [])
             AGENT_INSTANCES: dict[str, Agent] = dict(preview_instance.agents.items())
             AgencyRequest = add_agent_validator(BaseRequest, AGENT_INSTANCES)
             agency_metadata = preview_instance.get_agency_structure()
@@ -118,19 +118,19 @@ def run_fastapi(
             if enable_agui:
                 app.add_api_route(
                     f"/{agency_name}/get_response_stream",
-                    make_agui_chat_endpoint(RunAgentInputCustom, agency_factory, verify_token),
+                    make_agui_chat_endpoint(RunAgentInputCustom, agency_instance, verify_token),
                     methods=["POST"],
                 )
                 endpoints.append(f"/{agency_name}/get_response_stream")
             else:
                 app.add_api_route(
                     f"/{agency_name}/get_response",
-                    make_response_endpoint(AgencyRequest, agency_factory, verify_token),
+                    make_response_endpoint(AgencyRequest, agency_instance, verify_token),
                     methods=["POST"],
                 )
                 app.add_api_route(
                     f"/{agency_name}/get_response_stream",
-                    make_stream_endpoint(AgencyRequest, agency_factory, verify_token),
+                    make_stream_endpoint(AgencyRequest, agency_instance, verify_token),
                     methods=["POST"],
                 )
                 endpoints.append(f"/{agency_name}/get_response")
