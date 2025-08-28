@@ -16,6 +16,9 @@ from agents import FunctionTool, Tool
 
 from agency_swarm.tools import BaseTool, ToolFactory, validate_openapi_spec
 
+if TYPE_CHECKING:
+    from agency_swarm.agent.core import Agent
+
 logger = logging.getLogger(__name__)
 
 
@@ -71,10 +74,6 @@ def _attach_one_call_guard(tool: Tool, agent: "Agent") -> None:
 
     tool.on_invoke_tool = guarded_on_invoke  # type: ignore[attr-defined]
     tool._one_call_guard_installed = True  # type: ignore[attr-defined]
-
-
-if TYPE_CHECKING:
-    from agency_swarm.agent.core import Agent
 
 
 def add_tool(agent: "Agent", tool: Tool) -> None:
@@ -244,3 +243,18 @@ def validate_hosted_tools(tools: list) -> None:
             f"that require proper instantiation with their configuration parameters.\n"
             f"Please initialize these tools according to their schemas before adding them to the agent."
         )
+
+
+def load_mcp_tools(agent: "Agent") -> None:
+    """Load MCP tools from the MCP servers and add them to the agent.
+    Will also add mcp server connection management to the tool's on_invoke_tool method.
+
+    Args:
+        agent: The agent to load MCP tools for
+    """
+    if not agent.mcp_servers:
+        return
+    convert_schemas_to_strict = agent.mcp_config.get("convert_schemas_to_strict", False)
+    tools = ToolFactory.from_mcp(agent.mcp_servers, convert_schemas_to_strict, context=None, agent=agent)
+    for tool in tools:
+        add_tool(agent, tool)
