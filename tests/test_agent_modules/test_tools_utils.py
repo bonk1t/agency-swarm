@@ -164,10 +164,14 @@ class TestValidateOpenAPISpec:
         "spec,should_pass",
         [
             ({"paths": {"/users": {"get": {"operationId": "getUsers", "description": "Get users"}}}}, True),
+            (
+                {"paths": {"/users": {"get": {"operationId": "getUsers", "summary": "Get users"}}}},
+                True,
+            ),
             ({"info": {"title": "API"}}, False),  # Missing paths
             ({"paths": {"/users": "invalid"}}, False),  # Invalid path item
             ({"paths": {"/users": {"get": {"description": "Get users"}}}}, False),  # Missing operationId
-            ({"paths": {"/users": {"get": {"operationId": "getUsers"}}}}, False),  # Missing description
+            ({"paths": {"/users": {"get": {"operationId": "getUsers"}}}}, False),  # Missing description and summary
         ],
     )
     def test_validation(self, spec, should_pass):

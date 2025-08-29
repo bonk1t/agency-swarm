@@ -36,7 +36,7 @@ def from_openapi_schema(
         headers (dict[str, str] | None, optional): Extra HTTP headers to send with each call. Defaults to None.
         params (dict[str, Any] | None, optional): Extra query parameters to append to every call. Defaults to None.
         strict (bool, optional): If True, sets 'additionalProperties' to False in every generated schema.
-            Defaults to True.
+            Defaults to False.
         timeout (int, optional): HTTP timeout in seconds. Defaults to 90.
 
     Returns:
@@ -168,7 +168,15 @@ def from_openapi_schema(
     return tools
 
 
-def validate_openapi_spec(spec: str):
+def validate_openapi_spec(spec: str) -> dict:
+    """Validate minimal structure of an OpenAPI specification.
+
+    The spec must contain a ``paths`` dictionary. Each path item must be a
+    mapping where operations include an ``operationId`` and at least one of
+    ``description`` or ``summary``.
+
+    Returns the parsed specification dictionary if validation succeeds.
+    """
     spec_dict = json.loads(spec)
 
     # Validate that 'paths' is present in the spec
@@ -188,8 +196,8 @@ def validate_openapi_spec(spec: str):
             # Basic validation for each operation
             if "operationId" not in operation:
                 raise ValueError("Each operation must contain an 'operationId'.")
-            if "description" not in operation:
-                raise ValueError("Each operation must contain a 'description'.")
+            if "description" not in operation and "summary" not in operation:
+                raise ValueError("Each operation must contain a 'description' or 'summary'.")
 
     return spec_dict
 
