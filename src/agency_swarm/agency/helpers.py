@@ -2,7 +2,8 @@
 import inspect
 import logging
 import os
-from typing import TYPE_CHECKING, Any
+from copy import deepcopy
+from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
     from .core import Agency
@@ -182,14 +183,24 @@ def run_fastapi(
         Optional list of allowed CORS origins passed through to
         :func:`run_fastapi`.
     """
+    from agency_swarm import Agency
     from agency_swarm.integrations.fastapi import run_fastapi
 
+    def agency_factory(*, load_threads_callback=None, save_threads_callback=None, **_: Any) -> Agency:
+        flows = cast(list[Any], agency._derived_communication_flows)
+        return Agency(
+            *agency.entry_points,
+            communication_flows=flows,
+            name=agency.name,
+            shared_instructions=agency.shared_instructions,
+            send_message_tool_class=agency.send_message_tool_class,
+            load_threads_callback=load_threads_callback,
+            save_threads_callback=save_threads_callback,
+            user_context=deepcopy(agency.user_context),
+        )
+
     run_fastapi(
-        # TODO: agency_factory should create a new Agency instance each call
-        # to properly load conversation history via the callback.
-        # Returning `self` preserves old behaviour but may skip persistence
-        # loading. Consider refactoring.
-        agencies={agency.name or "agency": lambda **kwargs: agency},
+        agencies={agency.name or "agency": agency_factory},
         host=host,
         port=port,
         app_token_env=app_token_env,
