@@ -188,8 +188,8 @@ def validate_openapi_spec(spec: str):
             # Basic validation for each operation
             if "operationId" not in operation:
                 raise ValueError("Each operation must contain an 'operationId'.")
-            if "description" not in operation:
-                raise ValueError("Each operation must contain a 'description'.")
+            if "description" not in operation and "summary" not in operation:
+                raise ValueError("Each operation must contain a 'description' or 'summary'.")
 
     return spec_dict
 
