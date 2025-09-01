@@ -5,7 +5,7 @@
 """
 Agency Swarm Examples
 
-This package contains comprehensive examples demonstrating various Agency Swarm capabilities:
+This package contains examples demonstrating various Agency Swarm capabilities:
 
 - Multi-agent communication and coordination patterns
 - File processing, vision analysis, and content handling

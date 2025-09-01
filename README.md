@@ -31,7 +31,7 @@ This framework continues the original vision of Arsenii Shatokhin (aka VRSEN) to
 - **Type-Safe Tools**: Develop tools using Pydantic models for automatic argument validation, compatible with the OpenAI Agents SDK's `FunctionTool` format.
 - **Orchestrated Agent Communication**: Agents communicate via a dedicated `send_message` tool, with interactions governed by explicit `communication_flows` (directional) defined on the `Agency`.
 - **Flexible State Persistence**: Manage conversation history by providing `load_threads_callback` and `save_threads_callback` functions to the `Agency`. This allows for loading and saving conversation threads to external storage, enabling persistence across sessions.
-- **Multi-Agent Orchestration**: Build agent workflows by leveraging the OpenAI Agents SDK foundation, enhanced by Agency Swarm's structured orchestration layer.
+- **Multi-Agent Orchestration**: Build agent workflows using the OpenAI Agents SDK foundation and Agency Swarm's orchestration layer.
 - **Production-Ready Focus**: Built for reliability and designed for easy deployment in real-world environments.
 
 ## Installation

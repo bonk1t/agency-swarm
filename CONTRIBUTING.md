@@ -91,7 +91,7 @@ def test_my_tool_example():
 
 ---
 
-Thank you for contributing to Agency Swarm! Your efforts help us build a more robust and versatile framework.
+Thank you for contributing to Agency Swarm! Your efforts help improve the framework.
 
 1. **Install Test Dependencies**
 
@@ -150,4 +150,4 @@ class AgentName(Agent):
 
 ---
 
-Thank you for contributing to Agency Swarm! Your efforts help us build a more robust and versatile framework.
+Thank you for contributing to Agency Swarm! Your efforts help improve the framework.

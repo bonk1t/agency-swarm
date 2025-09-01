@@ -38,7 +38,7 @@ class MasterContext:
     def __post_init__(self):
         """Basic validation after initialization."""
         # Runtime checks are limited due to forward references.
-        # More robust validation occurs in Agency during context creation.
+        # Additional validation occurs in Agency during context creation.
         # Thread manager validation is done at creation time in Agency
         if not isinstance(self.agents, dict):
             raise TypeError("MasterContext 'agents' must be a dictionary.")

@@ -49,8 +49,8 @@ def create_agency(load_threads_callback=None):
     agent2 = Agent(
         name="ExampleAgent2",
         description=(
-            "A helpful and knowledgeable assistant that provides "
-            "comprehensive support and guidance across various domains."
+            "A helpful and knowledgeable assistant that provides support "
+            "and guidance across various domains."
         ),
         instructions="You are a helpful assistant. Use the ExampleTool when asked to greet someone.",
         tools=[ExampleTool],

@@ -206,7 +206,7 @@ class SendMessageAPI(SendMessage):
         return response.json()["message"]
 ```
 
-This is very powerful, as you can even allow your agents to collaborate with agents outside your system. More on this is coming soon!
+This approach lets your agents collaborate with agents outside your system. More on this is coming soon!
 
 **After implementing your own `SendMessage` tool**, simply pass it into the `send_message_tool_class` parameter when initializing the `Agency` class:
 
