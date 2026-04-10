@@ -1,5 +1,42 @@
 # AGENTS.md
 
+
+## Structural Discipline Rules
+
+- Start with context first: identify what this is, the scope, and the current status before details.
+- Think hierarchically before writing: define the category tree first, then place details under the correct level.
+- One list = one category. Items in the same list must be directly comparable and on the same level of importance.
+- Do not mix strategic decisions, implementation details, status notes, and side comments in one bucket.
+- Discipline is mandatory. Do not improvise structure lazily. Do not patch over confusion with vague prose.
+- Perfectionism is the default standard. Do not half-do work, ship partial reasoning, or stop at the first acceptable draft.
+- Double-check every meaningful output for correctness, completeness, regressions, structural clarity, and missing user context.
+- Revisit your own work proactively if any weak spot could force the user to follow up.
+- Use subagents aggressively for scoped exploration and independent verification.
+- Subagents are stateless by default. Give them the exact context they need, and never assume they remember prior delegated work unless that context is reloaded explicitly.
+- Preserve privacy in durable files. Use neutral operational wording for sensitive personal information unless the user explicitly asks for exact wording.
+
+## Explanation-Driven Operating Model
+
+### Goal
+- Strengthen the framework by favoring clear explanations, criticism, and error-correction over ritual compliance.
+
+### Non-Negotiable Invariants
+- Important instructions and architecture choices should explain `what`, `why`, `scope`, `non-scope`, and `how to verify success`.
+- Do not justify decisions with authority-only language. Use concrete mechanism, tradeoffs, tests, docs, and diffs.
+- If a request conflicts with framework constraints, product goals, existing contracts, or verified evidence, surface the conflict clearly.
+- Prefer reversible moves under uncertainty and preserve evidence for rollback or correction.
+- Truth comes from checks: tests, examples, type-checking, docs alignment, and observed SDK behavior.
+
+### Required Agent Behaviors
+- Explore the environment first: inspect current branch state, framework boundaries, docs, examples, and failing evidence before choosing a change.
+- Acquire goals explicitly: infer the real user goal, then rank correctness, framework coherence, developer ergonomics, and compatibility.
+- Build the world model continuously: update durable understanding of agents, threads, tools, hooks, docs, migration state, and review decisions.
+- Learn continuously: repeated mistakes, repeated review comments, or repeated slowdown mean the workflow or rules must be improved.
+
+### Slowdown and Ambiguity Rule
+- If ambiguity blocks a correct move, ask one precise question.
+- If execution is materially slowed by unclear state or evidence, stop and surface that slowdown immediately instead of improvising.
+
 Guidance for AI coding agents contributing to this repository.
 
 Prioritize critical thinking, thorough verification, and evidence-driven changes; treat tests as strong signals, and aim to reduce codebase entropy with each change.
@@ -11,10 +48,10 @@ North Star: keep the user's general intent and direction clear; if literal words
 - User requests come first unless they conflict with system or developer rules; move fast within those limits.
 
 ## AGENTS.md Maintenance
-- Treat AGENTS.md as the highest-priority maintenance file; refactor it to reduce entropy (remove or tighten before adding) and to improve clarity when needed.
+- Treat AGENTS.md as the highest-priority maintenance file; it should stay a short codification of normal collaborator common sense, and you should refactor it to reduce entropy (remove or tighten before adding) and improve clarity when needed.
 
 Begin each task after reviewing this readiness checklist:
-- When a request has multiple things to consider or more than a single straightforward action, use the plan/todo tool.
+- When a request has multiple things to consider or more than a single straightforward action, use the plan/todo tool and break the work into at least 10 concrete items when practical.
 - Restate the user's intent and the active task in your responses to the user when it helps clarity; when asked about anything, answer concisely and explicitly before elaborating.
 - Prime yourself with enough context to act safely—read, trace, and analyze the relevant paths before changes, and do not proceed unless you can explain the change in your own words.
 - Use fresh tool outputs before acting; do not rely on memory.
@@ -28,10 +65,13 @@ Begin each task after reviewing this readiness checklist:
 - When a non-readonly command is blocked by sandboxing, rerun it with escalated permissions if needed.
 - Before adding or changing any rule, locate related AGENTS.md rules and consolidate by reinforcing, generalizing, or removing conflicts; never append blindly.
 - Assume user guidance may contain mistakes; verify referenced files and facts against the repo and latest diffs before acting.
+- If verified evidence conflicts with a core user requirement, stop, ask one concise question, and wait.
 - Always produce evidence when asked—run the relevant code, examples, or commands before responding, and cite the observed output.
 
 ## Continuous Work Rule
-Before responding to the user and when you consider your task done, check whether the outstanding-task or todo list is empty. If there is still work to do, continue executing; if you encounter a blocker, ask the user clear, specific questions about what is needed.
+Before responding to the user and when you consider your task done, check whether the outstanding-task or todo list is empty. If any productive next step remains, keep working and do not hand off a partial state. If you hit a real blocker, ask the user one clear, specific question about what is needed.
+- Exercise normal collaborator common sense: do not accumulate local drift; local-only state is fragile and may disappear with the machine, so once work is verified and approval to ship is clear, commit and push it to GitHub promptly, and if it is not correct, remove it promptly.
+- Do not leave verified local changes sitting uncommitted or unpushed while approval to ship is already clear and fresh; persist them remotely or discard them.
 - For build-impact PR work, do not hand off as "done" until the latest PR head is review-complete: no unresolved threads, local Codex artifact says no findings, required checks are green, and the PR has explicit approval/thumbs up on the latest head.
 - Pending hosted CI, pending PR-bound Codex review, unresolved PR comments/threads, and any other agent-observable external workflow still count as outstanding work.
 - If only external signals are pending (for example CI or reviewer approval), report that exact waiting state and keep polling instead of stopping early.
@@ -42,10 +82,12 @@ Ask only when required; otherwise proceed autonomously and fast.
 
 - Pause and ask the user when:
   - Requirements or behavior remain ambiguous after deep research.
+  - Verified evidence conflicts with a core user requirement.
   - You cannot articulate a plan for the change.
   - A design decision or conflict with established patterns needs user direction.
   - You find failures or root causes that change scope or expectations.
   - You need explicit approval for workarounds, behavior changes, staging/committing, destructive commands, or entropy-increasing changes.
+  - You would need to stop, start, restart, kill, unload, or otherwise modify any local process, app, daemon, launch agent, service, or background job you did not create in the current task.
   - You encounter unexpected changes outside your intended change set or cannot attribute them.
   - Tooling/sandbox/permission limits block an essential command (request approval to rerun).
   - You discover you skipped repo/PR preflight or worked in the wrong repo/branch; stop and escalate with the correction plan before continuing.
@@ -292,7 +334,7 @@ Strictness
 ## Git Practices
 - Review diffs and status before and after changes; read the full `git diff` and `git diff --staged` outputs before planning new changes or committing.
 - Never commit or push unless you have verified the changes are correct and improve the codebase.
-- Treat staging and committing as user-approved actions: do not stage or commit unless the user explicitly asks.
+- Treat staging, committing, and pushing as user-approved actions: do not do them unless the user explicitly asks, but once approval is clear and the change is verified, do them immediately and persist the result on GitHub instead of letting local-only state accumulate.
 - Never modify staged changes; work in unstaged changes unless the user explicitly asks otherwise.
 - Use non-interactive git defaults to avoid editor prompts (for example, set `GIT_EDITOR=true`).
 - When stashing and if needed, keep staged and unstaged changes in separate stashes using the appropriate flags.
